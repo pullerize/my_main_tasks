@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+venv/
+logs/
+*.log
+
+# Node
+node_modules/
+dist/
+
+# Env files (секреты)
+.env
+.env.local
+.env.production

@@ -1,0 +1,28 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копирование и установка зависимостей
+COPY agency_backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install gunicorn
+
+# Копирование приложения
+COPY . .
+
+# Создание необходимых директорий
+RUN mkdir -p contracts static
+
+# Создание пользователя для безопасности
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+
+# Production server с Gunicorn
+CMD ["gunicorn", "agency_backend.app.main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]

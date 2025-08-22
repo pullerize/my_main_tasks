@@ -1,0 +1,18 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Копирование package.json и package-lock.json
+COPY agency_frontend/package*.json ./
+
+# Установка зависимостей
+RUN npm install
+
+# Копирование исходного кода
+COPY agency_frontend/ .
+
+# Открытие порта
+EXPOSE 5173
+
+# Команда по умолчанию
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
