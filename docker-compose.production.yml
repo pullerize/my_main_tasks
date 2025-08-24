@@ -6,20 +6,16 @@ services:
       context: .
       dockerfile: Dockerfile.backend.prod
     env_file: .env.production
-    # не публикуем порт наружу — только внутри сети
     expose:
       - "8000"
     volumes:
-      # хранить данные вне образа
       - ./data:/data
       - ./contracts:/app/contracts
       - ./static:/app/static
     command: uvicorn agency_backend.app.main:app --host 0.0.0.0 --port 8000 --workers 2
-    networks: [app-net]
     restart: unless-stopped
+    networks: [app-net]
 
-  # фронт собираем в /app/dist (внутри контейнера сборки),
-  # готовые файлы положим на volume ./dist
   frontend-build:
     build:
       context: .
@@ -30,24 +26,19 @@ services:
       - ./agency_frontend:/app
       - ./dist:/app/dist
     networks: [app-net]
-    restart: "no"
 
-  # внешний веб-сервер
   nginx:
     image: nginx:1.27-alpine
     ports:
       - "80:80"
-      # если будете подключать свои сертификаты — раскомментируйте 443
-      # - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./dist:/usr/share/nginx/html:ro
-      # - ./certs:/etc/ssl/private:ro     # если будете класть свои ключи
     depends_on:
       - backend
       - frontend-build
-    networks: [app-net]
     restart: unless-stopped
+    networks: [app-net]
 
 networks:
   app-net:
