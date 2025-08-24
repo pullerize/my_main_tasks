@@ -42,6 +42,9 @@ def authenticate_user(db: Session, username: str, password: str):
     user = get_user(db, username)
     if not user or not verify_password(password, user.hashed_password):
         return None
+    # Check if user is inactive
+    if user.role == models.RoleEnum.inactive:
+        return None
     return user
 
 
@@ -73,4 +76,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
 
 
 def get_current_active_user(current_user: models.User = Depends(get_current_user)):
+    # Check if user is inactive
+    if current_user.role == models.RoleEnum.inactive:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive"
+        )
     return current_user

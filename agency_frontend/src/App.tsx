@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
 import Navbar from './components/Navbar'
 import Login from './pages/Login'
 import Tasks from './pages/Tasks'
@@ -18,10 +19,33 @@ import Resources from './pages/Resources'
 import { SidebarProvider, useSidebar } from './contexts/SidebarContext'
 
 function AppContent() {
-  const token = localStorage.getItem('token')
-  const role = localStorage.getItem('role')
+  const [token, setToken] = useState(localStorage.getItem('token'))
+  const [role, setRole] = useState(localStorage.getItem('role'))
   const defaultPath = role === 'admin' ? '/smm-projects' : '/tasks'
   const { isCollapsed } = useSidebar()
+
+  useEffect(() => {
+    const handleStorageChange = () => {
+      setToken(localStorage.getItem('token'))
+      setRole(localStorage.getItem('role'))
+    }
+
+    window.addEventListener('storage', handleStorageChange)
+    
+    const checkAuth = () => {
+      const currentToken = localStorage.getItem('token')
+      const currentRole = localStorage.getItem('role')
+      if (currentToken !== token) setToken(currentToken)
+      if (currentRole !== role) setRole(currentRole)
+    }
+    
+    const interval = setInterval(checkAuth, 100)
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange)
+      clearInterval(interval)
+    }
+  }, [token, role])
   
   if (!token) {
     // Clear any stale data when no token

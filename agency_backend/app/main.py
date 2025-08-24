@@ -139,6 +139,28 @@ def delete_user(user_id: int, db: Session = Depends(auth.get_db), current: model
     return {"ok": True}
 
 
+@app.put("/users/{user_id}/toggle-status")
+def toggle_user_status(user_id: int, db: Session = Depends(auth.get_db), current: models.User = Depends(auth.get_current_active_user)):
+    if current.role != models.RoleEnum.admin:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    
+    user = crud.get_user(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Toggle between inactive and the user's previous role (default to designer)
+    if user.role == models.RoleEnum.inactive:
+        # Reactivate user - default to designer role
+        user.role = models.RoleEnum.designer
+    else:
+        # Deactivate user
+        user.role = models.RoleEnum.inactive
+    
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 @app.post("/users/{user_id}/contract")
 def upload_contract(
     user_id: int,
@@ -195,8 +217,16 @@ def delete_contract(
 
 
 @app.get("/tasks/", response_model=list[schemas.Task])
-def read_tasks(skip: int = 0, limit: int = 100, db: Session = Depends(auth.get_db), current: models.User = Depends(auth.get_current_active_user)):
+def read_tasks(skip: int = 0, limit: int = 10000, db: Session = Depends(auth.get_db), current: models.User = Depends(auth.get_current_active_user)):
     return crud.get_tasks_for_user(db, current, skip=skip, limit=limit)
+
+
+@app.get("/tasks/all", response_model=list[schemas.Task])
+def read_all_tasks(skip: int = 0, limit: int = 10000, db: Session = Depends(auth.get_db), current: models.User = Depends(auth.get_current_active_user)):
+    # Only admins and smm_managers can access all tasks for reports
+    if current.role not in [models.RoleEnum.admin, models.RoleEnum.smm_manager]:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    return crud.get_tasks(db, skip=skip, limit=limit)
 
 
 @app.post("/tasks/", response_model=schemas.Task)

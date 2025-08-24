@@ -20,9 +20,9 @@ from .database import Base
 class RoleEnum(str, enum.Enum):
     designer = "designer"
     smm_manager = "smm_manager"
-    head_smm = "head_smm"
     admin = "admin"
     digital = "digital"
+    inactive = "inactive"  # Для бывших сотрудников
 
 class User(Base):
     __tablename__ = "users"
@@ -49,7 +49,8 @@ class User(Base):
 
 class TaskStatus(str, enum.Enum):
     in_progress = "in_progress"
-    done = "done"
+    done = "done" 
+    cancelled = "cancelled"
 
 class Task(Base):
     __tablename__ = "tasks"

@@ -17,7 +17,7 @@ const MONTH_NAMES = [
   'Декабрь',
 ]
 
-interface Project { id: number; name: string }
+interface Project { id: number; name: string; logo?: string }
 interface Expense { id: number; name: string; amount: number; comment?: string }
 interface Receipt { id: number; name: string; amount: number; comment?: string }
 interface ClientExpense { id: number; name: string; amount: number; comment?: string }
@@ -478,8 +478,21 @@ function Reports() {
                       className="group bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 cursor-pointer border border-gray-200 hover:border-blue-300 p-6 transform hover:-translate-y-1"
                     >
                       <div className="flex items-center space-x-4">
-                        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg">
-                          <span className="text-white font-bold text-lg">{p.name.charAt(0)}</span>
+                        <div className="w-12 h-12 rounded-full bg-white border border-gray-200 flex items-center justify-center shadow-lg">
+                          {p.logo ? (
+                            <img 
+                              src={`${API_URL}/${p.logo}`} 
+                              alt={p.name}
+                              className="w-8 h-8 object-cover rounded-full"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement;
+                                target.style.display = 'none';
+                                const fallback = target.nextElementSibling as HTMLElement;
+                                if (fallback) fallback.style.display = 'block';
+                              }}
+                            />
+                          ) : null}
+                          <span className={`text-gray-700 font-bold text-lg ${p.logo ? 'hidden' : ''}`}>{p.name.charAt(0)}</span>
                         </div>
                         <div>
                           <h3 className="font-semibold text-gray-800 group-hover:text-blue-600 transition-colors">{p.name}</h3>

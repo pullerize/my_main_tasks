@@ -87,10 +87,11 @@ function Analytics() {
   const [digitalTasks, setDigitalTasks] = useState<any[]>([])
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
+  const [teamFilter, setTeamFilter] = useState<'all' | 'active'>('active')
 
   useEffect(() => {
     fetchData()
-  }, [timeRange, customStartDate, customEndDate])
+  }, [timeRange, customStartDate, customEndDate, teamFilter])
 
   const fetchData = async () => {
     try {
@@ -276,7 +277,7 @@ function Analytics() {
     const roleCategories = {
       'Дизайн-задачи': ['designer'],
       'Digital-задачи': [], // Digital задачи определяются по источнику
-      'СММ-задачи': ['smm_manager', 'head_smm'],
+      'СММ-задачи': ['smm_manager'],
       'Админ-задачи': ['admin']
     }
     
@@ -312,7 +313,12 @@ function Analytics() {
   }
   
   const calculateTeamProductivity = (users: User[], allTasks: Task[]) => {
-    return users.map(user => {
+    // Фильтруем пользователей в зависимости от выбранного фильтра
+    const filteredUsers = teamFilter === 'active' 
+      ? users.filter(user => user.role !== 'inactive') 
+      : users
+
+    return filteredUsers.map(user => {
       const userTasks = allTasks.filter(t => t.executor_id === user.id)
       const completedTasks = userTasks.filter(t => t.status === 'done' || t.status === 'completed')
       
@@ -662,7 +668,19 @@ function Analytics() {
 
       {/* Производительность команды */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-        <h3 className="text-lg font-semibold text-gray-900 mb-6">Производительность команды</h3>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6">
+          <h3 className="text-lg font-semibold text-gray-900">Производительность команды</h3>
+          <div className="mt-2 sm:mt-0">
+            <select
+              value={teamFilter}
+              onChange={(e) => setTeamFilter(e.target.value as 'all' | 'active')}
+              className="border border-gray-300 rounded-lg px-4 py-2 bg-white shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+            >
+              <option value="active">Производительность текущей команды</option>
+              <option value="all">Производительность всех работников 8BIT</option>
+            </select>
+          </div>
+        </div>
         <ResponsiveContainer width="100%" height={300}>
           <BarChart data={displayData?.teamProductivity || []}>
             <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />

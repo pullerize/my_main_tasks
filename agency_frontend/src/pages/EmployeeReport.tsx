@@ -45,7 +45,6 @@ interface DigitalTask {
 const ROLE_NAMES: Record<string, string> = {
   designer: 'Дизайнер',
   smm_manager: 'СММ-менеджер',
-  head_smm: 'Head of SMM',
   admin: 'Администратор',
 }
 
@@ -106,8 +105,9 @@ function EmployeeReport() {
 
   const now = new Date()
   const [period, setPeriod] = useState<'day' | 'week' | 'month' | 'custom'>('custom')
-  const [startDate, setStartDate] = useState(firstDay(now).toISOString().slice(0,10))
-  const [endDate, setEndDate] = useState(lastDay(now).toISOString().slice(0,10))
+  // Set default date range to include all tasks (2024-2025)
+  const [startDate, setStartDate] = useState('2024-01-01')
+  const [endDate, setEndDate] = useState('2025-12-31')
   const [status, setStatus] = useState<'all' | 'in_progress' | 'done'>('all')
   const [taskSource, setTaskSource] = useState<'all' | 'tasks' | 'digital' | 'smm'>('all')
 
@@ -123,8 +123,8 @@ function EmployeeReport() {
       setUsers(u)
       setProjects(p)
       
-      // Загружаем обычные задачи (включая SMM задачи)
-      const tasksRes = await fetch(`${API_URL}/tasks/`, { headers })
+      // Загружаем ВСЕ задачи для отчета (включая задачи без исполнителя)
+      const tasksRes = await fetch(`${API_URL}/tasks/all`, { headers })
       const regularTasks = tasksRes.ok ? await tasksRes.json() : []
       
       // Загружаем Digital проекты
@@ -209,21 +209,28 @@ function EmployeeReport() {
     }
   }
 
-  const filteredTasks = tasks.filter(t => {
-    if (String(t.executor_id) !== userId) return false
+  // Pre-filter tasks WITHOUT status filter to get correct counts
+  const baseFilteredTasks = tasks.filter(t => {
+    // Фильтр по пользователю: если выбран конкретный пользователь, показываем только его задачи
+    if (userId && String(t.executor_id || '') !== userId) return false
     if (project && t.project !== project) return false
     const created = new Date(t.created_at).getTime()
     const start = new Date(startDate).getTime()
     const end = new Date(endDate).getTime() + 86400000 - 1
     if (created < start || created > end) return false
-    if (status === 'in_progress' && t.status === 'done') return false
-    if (status === 'done' && t.status !== 'done') return false
     
     // Фильтр по источнику задач
     if (taskSource === 'digital' && t.source !== 'digital') return false
     if (taskSource === 'smm' && !(t.source === 'tasks' && t.task_type?.toLowerCase().includes('smm'))) return false
     if (taskSource === 'tasks' && (t.source === 'digital' || t.task_type?.toLowerCase().includes('smm'))) return false
     
+    return true
+  })
+
+  // Apply status filter for display
+  const filteredTasks = baseFilteredTasks.filter(t => {
+    if (status === 'in_progress' && (t.status === 'done' || t.status === 'cancelled')) return false
+    if (status === 'done' && t.status !== 'done') return false
     return true
   }).sort((a,b)=>{
     const sa = a.status === 'done' ? 1 : 0
@@ -233,6 +240,11 @@ function EmployeeReport() {
     const db = new Date(b.deadline || b.created_at).getTime()
     return da - db
   })
+
+  // Calculate counts from base filtered tasks
+  const allTasksCount = baseFilteredTasks.length
+  const doneTasksCount = baseFilteredTasks.filter(t => t.status === 'done').length
+  const inProgressTasksCount = baseFilteredTasks.filter(t => t.status !== 'done').length
 
   const getUserName = (id?: number) => {
     const u = users.find(x => x.id === id)
@@ -351,7 +363,7 @@ function EmployeeReport() {
                 value={userId} 
                 onChange={e=>setUserId(e.target.value)}
               >
-                <option value="">Выберите сотрудника</option>
+                <option value="">Все сотрудники</option>
                 {users.map(u => (
                   <option key={u.id} value={u.id}>
                     {u.name} ({ROLE_NAMES[u.role] || u.role})
@@ -395,20 +407,19 @@ function EmployeeReport() {
         </div>
       </div>
 
-      {selectedUser && (
-        <div className="px-6 pb-6">
+      <div className="px-6 pb-6">
           {/* Employee Info Cards */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
               <span>📊</span>
-              Информация о сотруднике
+              {selectedUser ? 'Информация о сотруднике' : 'Общая информация'}
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-sm font-medium text-blue-600">Имя сотрудника</div>
-                    <div className="text-xl font-bold text-gray-900 mt-1">{selectedUser.name}</div>
+                    <div className="text-sm font-medium text-blue-600">{selectedUser ? 'Имя сотрудника' : 'Отчет'}</div>
+                    <div className="text-xl font-bold text-gray-900 mt-1">{selectedUser ? selectedUser.name : 'Все сотрудники'}</div>
                   </div>
                   <span className="text-3xl">👤</span>
                 </div>
@@ -418,18 +429,19 @@ function EmployeeReport() {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-sm font-medium text-purple-600">Должность</div>
-                    <div className="text-xl font-bold text-gray-900 mt-1">{ROLE_NAMES[selectedUser.role] || selectedUser.role}</div>
+                    <div className="text-xl font-bold text-gray-900 mt-1">{selectedUser ? (ROLE_NAMES[selectedUser.role] || selectedUser.role) : 'Все роли'}</div>
                   </div>
                   <span className="text-3xl">💼</span>
                 </div>
               </div>
               
-              <div className="bg-gradient-to-r from-green-50 to-green-100 rounded-lg p-4 border border-green-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-medium text-green-600">Договор</div>
-                    <div className="mt-1">
-                      {selectedUser.contract_path ? (
+              {selectedUser && (
+                <div className="bg-gradient-to-r from-green-50 to-green-100 rounded-lg p-4 border border-green-200">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium text-green-600">Договор</div>
+                      <div className="mt-1">
+                        {selectedUser.contract_path ? (
                         <div className="flex items-center gap-2">
                           <button 
                             onClick={downloadContract} 
@@ -452,15 +464,16 @@ function EmployeeReport() {
                       )}
                     </div>
                   </div>
-                  <span className="text-3xl">📄</span>
+                    <span className="text-3xl">📄</span>
+                  </div>
                 </div>
-              </div>
+              )}
               
               <div className="bg-gradient-to-r from-orange-50 to-orange-100 rounded-lg p-4 border border-orange-200">
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-sm font-medium text-orange-600">Количество задач</div>
-                    <div className="text-3xl font-bold text-gray-900 mt-1">{filteredTasks.length}</div>
+                    <div className="text-3xl font-bold text-gray-900 mt-1">{allTasksCount}</div>
                   </div>
                   <span className="text-3xl">📋</span>
                 </div>
@@ -474,7 +487,7 @@ function EmployeeReport() {
                   <div>
                     <div className="text-sm font-medium text-gray-600">Выполнено задач</div>
                     <div className="text-2xl font-bold text-green-600 mt-1">
-                      {filteredTasks.filter(t => t.status === 'done').length}
+                      {doneTasksCount}
                     </div>
                   </div>
                   <span className="text-2xl">✅</span>
@@ -486,7 +499,7 @@ function EmployeeReport() {
                   <div>
                     <div className="text-sm font-medium text-gray-600">В работе</div>
                     <div className="text-2xl font-bold text-blue-600 mt-1">
-                      {filteredTasks.filter(t => t.status !== 'done').length}
+                      {inProgressTasksCount}
                     </div>
                   </div>
                   <span className="text-2xl">⏳</span>
@@ -512,7 +525,7 @@ function EmployeeReport() {
                     }`}
                     onClick={() => setStatus('all')}
                   >
-                    📊 Все задачи ({filteredTasks.length})
+                    📊 Все задачи ({allTasksCount})
                   </button>
                   <button
                     className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 ${
@@ -522,7 +535,7 @@ function EmployeeReport() {
                     }`}
                     onClick={() => setStatus('in_progress')}
                   >
-                    ⏳ В работе ({filteredTasks.filter(t => t.status !== 'done').length})
+                    ⏳ В работе ({inProgressTasksCount})
                   </button>
                   <button
                     className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 ${
@@ -532,7 +545,7 @@ function EmployeeReport() {
                     }`}
                     onClick={() => setStatus('done')}
                   >
-                    ✅ Завершенные ({filteredTasks.filter(t => t.status === 'done').length})
+                    ✅ Завершенные ({doneTasksCount})
                   </button>
                 </div>
               </div>
@@ -639,7 +652,6 @@ function EmployeeReport() {
             </div>
           </div>
         </div>
-      )}
       {modalTask && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl shadow-2xl w-[40rem] max-h-[90vh] overflow-hidden">

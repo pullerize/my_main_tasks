@@ -117,7 +117,7 @@ function Operators() {
           {Array.isArray(items) && items.map(o => (
             <tr key={o.id} className="text-center border-t">
               <td className="px-4 py-2 border">{o.name}</td>
-              <td className="px-4 py-2 border">{o.role}</td>
+              <td className="px-4 py-2 border">{o.role === 'mobile' ? 'Мобилограф' : o.role === 'video' ? 'Видеограф' : o.role}</td>
               <td className="px-4 py-2 border">
                 <span className="inline-block w-4 h-4 rounded" style={{background:o.color}} />
               </td>

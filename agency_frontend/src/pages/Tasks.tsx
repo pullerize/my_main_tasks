@@ -58,7 +58,6 @@ const ADMIN_TYPES = [
 const ROLE_NAMES: Record<string, string> = {
   designer: 'Дизайнер',
   smm_manager: 'СММ-менеджер',
-  head_smm: 'Head of SMM',
   admin: 'Администратор',
   digital: 'Digital',
 }
@@ -139,10 +138,18 @@ const renderDeadline = (t: Task) => {
     return ''
   }
   
-  if (!t.deadline) {
+  if (t.status === 'cancelled') {
     return (
       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-        ⏰ Не установлен
+        ❌ Отменено
+      </span>
+    )
+  }
+  
+  if (!t.deadline) {
+    return (
+      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+        📋 Без дедлайна
       </span>
     )
   }
@@ -220,18 +227,11 @@ function Tasks() {
     if (role === 'designer') return u.role === 'designer'
     if (role === 'smm_manager')
       return u.role === 'designer' || u.role === 'smm_manager'
-    if (role === 'head_smm')
-      return (
-        u.role === 'designer' ||
-        u.role === 'smm_manager' ||
-        u.role === 'head_smm'
-      )
     return false
   }) : []
 
   const allowedRoles = () => {
-    if (role === 'admin') return ['designer', 'smm_manager', 'head_smm', 'admin']
-    if (role === 'head_smm') return ['designer', 'smm_manager', 'head_smm']
+    if (role === 'admin') return ['designer', 'smm_manager', 'admin']
     if (role === 'smm_manager') return ['designer', 'smm_manager']
     if (role === 'designer') return ['designer']
     return []
@@ -304,16 +304,10 @@ function Tasks() {
       execRole !== 'smm_manager'
     )
       return false
-    if (
-      role === 'head_smm' &&
-      execRole !== 'designer' &&
-      execRole !== 'smm_manager' &&
-      execRole !== 'head_smm'
-    )
-      return false
     if (filterStatus !== 'all') {
-      if (filterStatus === 'active' && t.status === 'done') return false
+      if (filterStatus === 'active' && (t.status === 'done' || t.status === 'cancelled')) return false
       if (filterStatus === 'done' && t.status !== 'done') return false
+      if (filterStatus === 'cancelled' && t.status !== 'cancelled') return false
     }
     if (filterRole) {
       const exec = users.find((u) => u.id === t.executor_id)
@@ -344,9 +338,10 @@ function Tasks() {
   const sortedTasks = filteredTasks
     .slice()
     .sort((a, b) => {
-      const da = a.deadline ? new Date(a.deadline).getTime() - Date.now() : Infinity
-      const db = b.deadline ? new Date(b.deadline).getTime() - Date.now() : Infinity
-      return da - db
+      // Sort by creation date: newest first
+      const dateA = new Date(a.created_at).getTime()
+      const dateB = new Date(b.created_at).getTime()
+      return dateB - dateA
     })
 
   const validateDeadline = () => {
@@ -562,7 +557,6 @@ function Tasks() {
                 <option value="">Все роли</option>
                 <option value="designer">{ROLE_NAMES.designer}</option>
                 <option value="smm_manager">{ROLE_NAMES.smm_manager}</option>
-                <option value="head_smm">{ROLE_NAMES.head_smm}</option>
                 {role === 'admin' && (
                   <option value="admin">{ROLE_NAMES.admin}</option>
                 )}
@@ -614,6 +608,7 @@ function Tasks() {
             >
               <option value="active">Активные</option>
               <option value="done">Завершенные</option>
+              <option value="cancelled">Отмененные</option>
               <option value="all">Все</option>
             </select>
           </div>
@@ -666,6 +661,7 @@ function Tasks() {
                         <div className="flex items-center space-x-2">
                           <div className={`w-3 h-3 rounded-full ${
                             t.status === 'done' ? 'bg-green-500' : 
+                            t.status === 'cancelled' ? 'bg-gray-500' :
                             t.high_priority ? 'bg-red-500' : 'bg-yellow-500'
                           }`}></div>
                           {t.high_priority && t.status !== 'done' && (
@@ -731,6 +727,10 @@ function Tasks() {
                           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                             ✓ Завершено
                           </span>
+                        ) : t.status === 'cancelled' ? (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                            ❌ Отменено
+                          </span>
                         ) : (
                           renderDeadline(t)
                         )}
@@ -738,35 +738,49 @@ function Tasks() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex gap-2 justify-start flex-wrap">
-                        {t.status !== 'done' ? (
-                          <>
-                            {(t.executor_id === userId || t.author_id === userId) && (
-                              <button
-                                className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
-                                onClick={() => deleteTask(t.id)}
-                              >
-                                Удалить
-                              </button>
-                            )}
-                            {(t.executor_id === userId || t.author_id === userId) && (
-                              <button
-                                className="inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
-                                onClick={() => toggleStatus(t.id, 'done')}
-                              >
-                                Завершить
-                              </button>
-                            )}
-                          </>
-                        ) : (
-                          (t.executor_id === userId || t.author_id === userId) && (
-                            <button
-                              className="inline-flex items-center px-3 py-1.5 border border-yellow-300 text-xs font-medium rounded-md text-yellow-700 bg-yellow-50 hover:bg-yellow-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500 transition-colors"
-                              onClick={() => toggleStatus(t.id, 'in_progress')}
-                            >
-                              Возобновить
-                            </button>
-                          )
-                        )}
+                        {(() => {
+                          const isOverdue = t.deadline && t.status !== 'done' && t.status !== 'cancelled' && new Date(t.deadline) < new Date()
+                          const canManage = t.executor_id === userId || t.author_id === userId || role === 'admin' || isOverdue
+                          
+                          if (t.status !== 'done' && t.status !== 'cancelled') {
+                            return (
+                              <>
+                                {canManage && (
+                                  <button
+                                    className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                                    onClick={() => deleteTask(t.id)}
+                                  >
+                                    Удалить
+                                  </button>
+                                )}
+                                {canManage && (
+                                  <button
+                                    className="inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
+                                    onClick={() => toggleStatus(t.id, 'done')}
+                                  >
+                                    Завершить
+                                  </button>
+                                )}
+                                {isOverdue && !canManage && (
+                                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                    Просрочено
+                                  </span>
+                                )}
+                              </>
+                            )
+                          } else {
+                            return (
+                              (t.executor_id === userId || t.author_id === userId || role === 'admin') && (
+                                <button
+                                  className="inline-flex items-center px-3 py-1.5 border border-yellow-300 text-xs font-medium rounded-md text-yellow-700 bg-yellow-50 hover:bg-yellow-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500 transition-colors"
+                                  onClick={() => toggleStatus(t.id, 'in_progress')}
+                                >
+                                  Возобновить
+                                </button>
+                              )
+                            )
+                          }
+                        })()}
                       </div>
                     </td>
                   </tr>
