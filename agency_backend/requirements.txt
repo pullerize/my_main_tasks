@@ -6,3 +6,5 @@ passlib[bcrypt]
 python-jose
 python-dotenv
 python-multipart
+psycopg2-binary
+wget

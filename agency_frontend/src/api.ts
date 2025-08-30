@@ -1,4 +1,7 @@
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_URL = import.meta.env.VITE_API_URL || (
+  // В продакшене используем относительный путь через nginx proxy
+  window.location.hostname === 'localhost' ? 'http://localhost:8000' : '/api'
+);
 
 // Enhanced fetch with automatic logout on 401
 export const authFetch = async (url: string, options: RequestInit = {}) => {

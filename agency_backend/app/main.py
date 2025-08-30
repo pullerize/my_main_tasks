@@ -1292,13 +1292,24 @@ def download_resource_file(
 
 
 @app.get("/health")
-def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy", 
-        "timestamp": datetime.utcnow().isoformat(),
-        "version": "1.0.0"
-    }
+def health_check(db: Session = Depends(auth.get_db)):
+    """Health check endpoint for Docker"""
+    try:
+        # Проверяем подключение к БД
+        db.execute(text("SELECT 1"))
+        return {
+            "status": "healthy", 
+            "database": "connected",
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": "1.0.0"
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "database": "disconnected", 
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
 
 @app.post("/admin/import-database")

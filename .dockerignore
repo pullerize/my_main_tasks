@@ -1,0 +1,56 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Node modules
+node_modules
+npm-debug.log
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env
+venv
+.venv
+
+# IDEs
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+
+# Development files
+.env
+.env.local
+.env.development
+.env.test
+
+# Build artifacts
+dist
+build
+*.egg-info
+
+# Database files (они будут в volume)
+*.db
+*.sqlite
+*.sqlite3
+
+# Local development files
+agency_backend/app.db
+agency_backend/app_main.db
