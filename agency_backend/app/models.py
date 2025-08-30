@@ -20,6 +20,7 @@ from .database import Base
 class RoleEnum(str, enum.Enum):
     designer = "designer"
     smm_manager = "smm_manager"
+    head_smm = "head_smm"
     admin = "admin"
     digital = "digital"
     inactive = "inactive"  # Для бывших сотрудников
@@ -119,6 +120,7 @@ class Project(Base):
     start_date = Column(DateTime, default=first_day_current_month)
     end_date = Column(DateTime, default=last_day_current_month)
     high_priority = Column(Boolean, default=False)
+    is_archived = Column(Boolean, default=False)
 
 class Shooting(Base):
     __tablename__ = "shootings"
@@ -267,13 +269,18 @@ class DigitalProject(Base):
     project = relationship("Project")
     service = relationship("DigitalService")
     executor = relationship("User")
+    
+    # Add cascade delete relationships
+    tasks = relationship("DigitalProjectTask", back_populates="project", cascade="all, delete-orphan")
+    finances = relationship("DigitalProjectFinance", back_populates="project", cascade="all, delete-orphan")
+    expenses = relationship("DigitalProjectExpense", back_populates="project", cascade="all, delete-orphan")
 
 
 class DigitalProjectTask(Base):
     __tablename__ = "digital_project_tasks"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("digital_projects.id"))
+    project_id = Column(Integer, ForeignKey("digital_projects.id", ondelete="CASCADE"))
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     links = Column(Text, nullable=True)
@@ -282,21 +289,21 @@ class DigitalProjectTask(Base):
     high_priority = Column(Boolean, default=False)
     status = Column(String, default="in_progress")  # in_progress, completed
 
-    project = relationship("DigitalProject")
+    project = relationship("DigitalProject", back_populates="tasks")
 
 
 class DigitalProjectFinance(Base):
     __tablename__ = "digital_project_finances"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("digital_projects.id"), unique=True)
+    project_id = Column(Integer, ForeignKey("digital_projects.id", ondelete="CASCADE"), unique=True)
     tax_id = Column(Integer, ForeignKey("taxes.id"), nullable=True)
     cost_without_tax = Column(Float, nullable=True)
     cost_with_tax = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    project = relationship("DigitalProject")
+    project = relationship("DigitalProject", back_populates="finances")
     tax = relationship("Tax")
 
 
@@ -304,13 +311,37 @@ class DigitalProjectExpense(Base):
     __tablename__ = "digital_project_expenses"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("digital_projects.id"))
+    project_id = Column(Integer, ForeignKey("digital_projects.id", ondelete="CASCADE"))
     description = Column(String, nullable=False)
     amount = Column(Float, nullable=False)
     date = Column(Date, default=datetime.utcnow().date)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    project = relationship("DigitalProject")
+    project = relationship("DigitalProject", back_populates="expenses")
+
+
+class FileCategoryEnum(str, enum.Enum):
+    general = "general"
+    project = "project"
+
+class ResourceFile(Base):
+    __tablename__ = "resource_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True, nullable=False)
+    filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    size = Column(Integer, default=0)
+    mime_type = Column(String, nullable=True)
+    category = Column(Enum(FileCategoryEnum), default=FileCategoryEnum.general)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
+    uploaded_by = Column(Integer, ForeignKey("users.id"))
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+    download_count = Column(Integer, default=0)
+    is_favorite = Column(Boolean, default=False)
+
+    project = relationship("Project")
+    uploader = relationship("User")
 
 
 class Setting(Base):

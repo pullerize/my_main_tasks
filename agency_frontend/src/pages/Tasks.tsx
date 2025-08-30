@@ -282,7 +282,10 @@ function Tasks() {
         if (res.ok) return res.json()
         throw new Error('Unauthorized')
       })
-      .then((data) => setProjects(Array.isArray(data) ? data : []))
+      .then((data) => {
+        const activeProjects = Array.isArray(data) ? data.filter((p: any) => !p.is_archived) : []
+        setProjects(activeProjects)
+      })
       .catch(() => setProjects([]))
   }, [])
 

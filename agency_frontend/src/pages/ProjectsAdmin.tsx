@@ -6,12 +6,14 @@ interface Project {
   name: string
   logo?: string
   high_priority?: boolean
+  is_archived?: boolean
 }
 
 function Projects() {
   const [items, setItems] = useState<Project[]>([])
   const [show, setShow] = useState(false)
   const [showLogoModal, setShowLogoModal] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
   const [editing, setEditing] = useState<Project | null>(null)
   const [editingLogo, setEditingLogo] = useState<Project | null>(null)
   const [name, setName] = useState('')
@@ -20,7 +22,10 @@ function Projects() {
   const token = localStorage.getItem('token')
 
   const load = async () => {
-    const res = await fetch(`${API_URL}/projects/`, {
+    const url = showArchived 
+      ? `${API_URL}/projects/?include_archived=true`
+      : `${API_URL}/projects/`
+    const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (res.ok) {
@@ -29,7 +34,7 @@ function Projects() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [showArchived])
 
   const openAdd = () => {
     setEditing(null)
@@ -39,6 +44,7 @@ function Projects() {
   }
 
   const openEdit = (p: Project) => {
+    if (p.is_archived) return
     setEditing(p)
     setName(p.name)
     setLogo(null)
@@ -139,11 +145,30 @@ function Projects() {
     load()
   }
 
+  const toggleArchive = async (project: Project) => {
+    await fetch(`${API_URL}/projects/${project.id}/toggle-archive`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    load()
+  }
+
+  const activeProjects = items.filter(p => !p.is_archived)
+  const archivedProjects = items.filter(p => p.is_archived)
+
   return (
     <div className="p-4">
       <div className="flex justify-between items-center mb-4">
         <h1 className="text-2xl">Проекты</h1>
-        <button className="bg-blue-500 text-white px-3 py-1 rounded" onClick={openAdd}>Добавить</button>
+        <div className="flex gap-2">
+          <button 
+            className={`px-3 py-1 rounded ${showArchived ? 'bg-gray-300' : 'bg-yellow-500 text-white'}`}
+            onClick={() => setShowArchived(!showArchived)}
+          >
+            {showArchived ? 'Показать активные' : 'Показать неактивные'}
+          </button>
+          <button className="bg-blue-500 text-white px-3 py-1 rounded" onClick={openAdd}>Добавить</button>
+        </div>
       </div>
       <table className="min-w-full bg-white border">
         <thead>
@@ -154,7 +179,7 @@ function Projects() {
           </tr>
         </thead>
         <tbody>
-          {items.map(p => (
+          {(showArchived ? archivedProjects : activeProjects).map(p => (
             <tr key={p.id} className="text-center border-t">
               <td className="px-4 py-2 border">
                 {p.logo ? (
@@ -163,11 +188,30 @@ function Projects() {
                   <span className="text-sm text-gray-500">Нет логотипа</span>
                 )}
               </td>
-              <td className="px-4 py-2 border">{p.name}</td>
+              <td className="px-4 py-2 border">
+                <div className="flex items-center justify-center gap-2">
+                  {p.name}
+                  {p.is_archived && (
+                    <span className="text-xs text-red-600 bg-red-100 px-2 py-1 rounded">
+                      Неактивный
+                    </span>
+                  )}
+                </div>
+              </td>
               <td className="px-4 py-2 border space-x-2">
-                <button className="text-blue-500" onClick={() => openEdit(p)}>Редактировать</button>
-                <button className="text-green-500" onClick={() => openLogoEdit(p)}>Логотип</button>
-                <button className="text-red-500" onClick={() => remove(p.id)}>Удалить</button>
+                {!p.is_archived ? (
+                  <>
+                    <button className="text-blue-500" onClick={() => openEdit(p)}>Редактировать</button>
+                    <button className="text-green-500" onClick={() => openLogoEdit(p)}>Логотип</button>
+                    <button className="text-yellow-500" onClick={() => toggleArchive(p)}>Архивировать</button>
+                    <button className="text-red-500" onClick={() => remove(p.id)}>Удалить</button>
+                  </>
+                ) : (
+                  <>
+                    <button className="text-green-500" onClick={() => toggleArchive(p)}>Активировать</button>
+                    <button className="text-red-500" onClick={() => remove(p.id)}>Удалить</button>
+                  </>
+                )}
               </td>
             </tr>
           ))}

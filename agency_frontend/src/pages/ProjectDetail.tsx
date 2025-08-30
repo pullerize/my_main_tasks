@@ -165,10 +165,7 @@ function ProjectDetail() {
         } else if (ed && d >= ed) {
           setMonth(m => (m === 12 ? 1 : m + 1))
         }
-        const today = new Date().toISOString().slice(0,10)
-        if (value === today) {
-          updated.status = 'in_progress'
-        }
+        // Removed automatic status update - status should only change when user explicitly changes it
       }
       
       if (post.id === 0) {
@@ -477,10 +474,31 @@ function ProjectDetail() {
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
                           style={{ color: statusColor }}
                         >
-                          {p.status === 'overdue' && <option value="overdue" disabled>⏰ Просрочено</option>}
-                          <option value="in_progress">🔄 В работе</option>
-                          <option value="approved">✅ Утвержден</option>
-                          <option value="cancelled">❌ Отменен</option>
+                          {(() => {
+                            const today = new Date().toISOString().slice(0, 10)
+                            const postDate = p.date ? p.date.slice(0, 10) : ''
+                            const isPastDate = postDate && postDate < today
+                            
+                            if (isPastDate) {
+                              // For past dates: only overdue, approved, or cancelled
+                              return (
+                                <>
+                                  <option value="overdue">⏰ Просрочено (автоматически)</option>
+                                  <option value="approved">✅ Завершена</option>
+                                  <option value="cancelled">❌ Отменена</option>
+                                </>
+                              )
+                            } else {
+                              // For today or future dates: all statuses except overdue
+                              return (
+                                <>
+                                  <option value="in_progress">🔄 В работе</option>
+                                  <option value="approved">✅ Завершена</option>
+                                  <option value="cancelled">❌ Отменена</option>
+                                </>
+                              )
+                            }
+                          })()}
                         </select>
                       </td>
                       <td className="px-6 py-4 text-center">

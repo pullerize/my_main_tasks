@@ -6,6 +6,7 @@ import Tasks from './pages/Tasks'
 import Calendar from './pages/Calendar'
 import Reports from './pages/Reports'
 import ExpensesReport from './pages/ExpensesReport'
+import EmployeeReport from './pages/EmployeeReport'
 import Users from './pages/Users'
 import Operators from './pages/Operators'
 import ProjectsAdmin from './pages/ProjectsAdmin'
@@ -74,6 +75,7 @@ function AppContent() {
             <Route path="/calendar" element={<Calendar />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/expenses-report" element={<ExpensesReport />} />
+            <Route path="/employee-report" element={<EmployeeReport />} />
             <Route path="/admin" element={<AdminPanel />} />
             <Route path="/users" element={<Users />} />
             <Route path="/operators" element={<Operators />} />

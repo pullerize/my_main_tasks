@@ -160,7 +160,11 @@ function Reports() {
 
   const loadProjects = async () => {
     const res = await fetch(`${API_URL}/projects/`, { headers: { Authorization: `Bearer ${token}` } })
-    if (res.ok) setProjects(await res.json())
+    if (res.ok) {
+      const data = await res.json()
+      const activeProjects = data.filter((p: any) => !p.is_archived)
+      setProjects(activeProjects)
+    }
   }
 
   const loadExpenseItems = async () => {

@@ -176,8 +176,12 @@ def update_task_status(db: Session, task_id: int, status: str):
     return task
 
 
-def get_projects(db: Session) -> List[models.Project]:
-    return db.query(models.Project).all()
+def get_projects(db: Session, include_archived: bool = False) -> List[models.Project]:
+    query = db.query(models.Project)
+    if not include_archived:
+        from sqlalchemy import or_
+        query = query.filter(or_(models.Project.is_archived == False, models.Project.is_archived == None))
+    return query.all()
 
 
 def create_project(db: Session, project: schemas.ProjectCreate) -> models.Project:
@@ -534,22 +538,45 @@ def get_project_posts(db: Session, project_id: int, start: datetime | None = Non
     if end:
         q = q.filter(models.ProjectPost.date <= end)
     posts = q.all()
+    
+    # Auto-set overdue status for posts with past dates and in_progress status
     today = datetime.utcnow().date()
     for p in posts:
-        if p.date.date() == today and p.status == models.PostStatus.overdue:
-            p.status = models.PostStatus.in_progress
-        elif p.status == models.PostStatus.in_progress and p.date.date() < today:
+        if p.date.date() < today and p.status == models.PostStatus.in_progress:
             p.status = models.PostStatus.overdue
+            db.commit()
+    
     return posts
 
 
 def create_project_post(db: Session, project_id: int, data: schemas.ProjectPostCreate) -> models.ProjectPost:
+    # Determine appropriate status based on date
+    today = datetime.utcnow().date()
+    post_date = data.date.date()
+    
+    if data.status:
+        # Validate provided status
+        if post_date < today and data.status == models.PostStatus.in_progress:
+            # Past date with in_progress -> auto-set to overdue
+            status = models.PostStatus.overdue
+        elif post_date >= today and data.status == models.PostStatus.overdue:
+            # Future/today date cannot be overdue -> default to in_progress
+            status = models.PostStatus.in_progress
+        else:
+            status = data.status
+    else:
+        # No status provided - auto-determine
+        if post_date < today:
+            status = models.PostStatus.overdue
+        else:
+            status = models.PostStatus.in_progress
+    
     post = models.ProjectPost(
         project_id=project_id,
         date=data.date,
         posts_per_day=data.posts_per_day,
         post_type=data.post_type,
-        status=data.status or models.PostStatus.in_progress,
+        status=status,
     )
     db.add(post)
     db.commit()
@@ -561,10 +588,28 @@ def update_project_post(db: Session, post_id: int, data: schemas.ProjectPostCrea
     post = db.query(models.ProjectPost).filter(models.ProjectPost.id == post_id).first()
     if not post:
         return None
+    
     post.date = data.date
     post.posts_per_day = data.posts_per_day
     post.post_type = data.post_type
-    post.status = data.status or post.status
+    
+    # Validate status based on date
+    if data.status is not None:
+        today = datetime.utcnow().date()
+        post_date = data.date.date() if data.date else post.date.date()
+        
+        if post_date < today:
+            # Past dates can only have: overdue, approved, or cancelled
+            if data.status == models.PostStatus.in_progress:
+                post.status = models.PostStatus.overdue  # Auto-set to overdue
+            else:
+                post.status = data.status
+        else:
+            # Today or future dates cannot be overdue
+            if data.status != models.PostStatus.overdue:
+                post.status = data.status
+            # If trying to set overdue for future date, keep current status
+    
     db.commit()
     db.refresh(post)
     return post
@@ -792,6 +837,13 @@ def update_digital_project_status(db: Session, project_id: int, status: str) -> 
 def delete_digital_project(db: Session, project_id: int) -> None:
     proj = db.query(models.DigitalProject).filter(models.DigitalProject.id == project_id).first()
     if proj:
+        # Delete all related tasks first
+        db.query(models.DigitalProjectTask).filter(models.DigitalProjectTask.project_id == project_id).delete()
+        # Delete all related finances
+        db.query(models.DigitalProjectFinance).filter(models.DigitalProjectFinance.project_id == project_id).delete()
+        # Delete all related expenses
+        db.query(models.DigitalProjectExpense).filter(models.DigitalProjectExpense.project_id == project_id).delete()
+        # Finally delete the project itself
         db.delete(proj)
         db.commit()
 
@@ -915,4 +967,76 @@ def delete_digital_project_expense(db: Session, expense_id: int) -> None:
     expense = db.query(models.DigitalProjectExpense).filter(models.DigitalProjectExpense.id == expense_id).first()
     if expense:
         db.delete(expense)
+        db.commit()
+
+
+# Resource File CRUD
+def get_resource_files(db: Session, category: Optional[str] = None, project_id: Optional[int] = None) -> List[models.ResourceFile]:
+    query = db.query(models.ResourceFile)
+    
+    if category == "general":
+        query = query.filter(models.ResourceFile.category == models.FileCategoryEnum.general)
+    elif category == "project":
+        query = query.filter(models.ResourceFile.category == models.FileCategoryEnum.project)
+        if project_id:
+            query = query.filter(models.ResourceFile.project_id == project_id)
+    
+    return query.order_by(models.ResourceFile.uploaded_at.desc()).all()
+
+
+def get_resource_file(db: Session, file_id: int) -> Optional[models.ResourceFile]:
+    return db.query(models.ResourceFile).filter(models.ResourceFile.id == file_id).first()
+
+
+def create_resource_file(db: Session, file_data: schemas.ResourceFileCreate, filename: str, file_path: str, size: int, mime_type: str, user_id: int) -> models.ResourceFile:
+    category_enum = models.FileCategoryEnum.project if file_data.category == "project" else models.FileCategoryEnum.general
+    
+    resource_file = models.ResourceFile(
+        name=file_data.name,
+        filename=filename,
+        file_path=file_path,
+        size=size,
+        mime_type=mime_type,
+        category=category_enum,
+        project_id=file_data.project_id if file_data.category == "project" else None,
+        uploaded_by=user_id,
+        is_favorite=file_data.is_favorite
+    )
+    
+    db.add(resource_file)
+    db.commit()
+    db.refresh(resource_file)
+    return resource_file
+
+
+def update_resource_file(db: Session, file_id: int, file_data: schemas.ResourceFileUpdate) -> Optional[models.ResourceFile]:
+    resource_file = get_resource_file(db, file_id)
+    if not resource_file:
+        return None
+    
+    if file_data.name is not None:
+        resource_file.name = file_data.name
+    if file_data.category is not None:
+        resource_file.category = models.FileCategoryEnum.project if file_data.category == "project" else models.FileCategoryEnum.general
+    if file_data.project_id is not None:
+        resource_file.project_id = file_data.project_id if file_data.category == "project" else None
+    if file_data.is_favorite is not None:
+        resource_file.is_favorite = file_data.is_favorite
+    
+    db.commit()
+    db.refresh(resource_file)
+    return resource_file
+
+
+def delete_resource_file(db: Session, file_id: int) -> None:
+    resource_file = get_resource_file(db, file_id)
+    if resource_file:
+        db.delete(resource_file)
+        db.commit()
+
+
+def increment_file_download_count(db: Session, file_id: int) -> None:
+    resource_file = get_resource_file(db, file_id)
+    if resource_file:
+        resource_file.download_count += 1
         db.commit()

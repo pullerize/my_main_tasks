@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 SQLALCHEMY_DATABASE_URL = os.getenv(
     "SQLALCHEMY_DATABASE_URL",
-    "sqlite:////data/app.db",  # дефолт в нашу смонтированную /data
+    "sqlite:///./app_main.db"
 )
 
 engine = create_engine(

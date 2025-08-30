@@ -150,6 +150,9 @@ function Analytics() {
   const calculateAnalytics = (users: User[], tasks: Task[], digitalTasks: any[], projects: any[]): AnalyticsData => {
     const allTasks = [...tasks, ...digitalTasks]
     
+    // Фильтруем архивированные проекты
+    const activeProjects = projects.filter((p: any) => !p.is_archived)
+    
     // Фильтруем задачи по времени
     const filteredTasks = filterTasksByTimeRange(allTasks)
     const previousPeriodTasks = filterTasksByPreviousPeriod(allTasks)
@@ -166,8 +169,8 @@ function Analytics() {
     // Задачи по типам (по ролям исполнителей) - используем все задачи
     const tasksByRole = calculateTasksByRole(users, tasks, digitalTasks)
     
-    // Производительность команды
-    const teamProductivity = calculateTeamProductivity(users, allTasks)
+    // Производительность команды - используем отфильтрованные по времени задачи
+    const teamProductivity = calculateTeamProductivity(users, filteredTasks)
     
     // Динамика задач по периодам
     const tasksByPeriod = calculateTasksByPeriod(allTasks)
@@ -188,8 +191,8 @@ function Analytics() {
         overdueTrend
       },
       projectsStats: {
-        total: projects.length,
-        active: projects.length,
+        total: activeProjects.length,
+        active: activeProjects.length,
         completed: 0
       },
       teamProductivity,
@@ -312,20 +315,21 @@ function Analytics() {
     return result
   }
   
-  const calculateTeamProductivity = (users: User[], allTasks: Task[]) => {
+  const calculateTeamProductivity = (users: User[], filteredTasks: Task[]) => {
     // Фильтруем пользователей в зависимости от выбранного фильтра
     const filteredUsers = teamFilter === 'active' 
       ? users.filter(user => user.role !== 'inactive') 
       : users
 
     return filteredUsers.map(user => {
-      const userTasks = allTasks.filter(t => t.executor_id === user.id)
+      // Используем уже отфильтрованные по времени задачи
+      const userTasks = filteredTasks.filter(t => t.executor_id === user.id)
       const completedTasks = userTasks.filter(t => t.status === 'done' || t.status === 'completed')
       
       return {
         name: user.name,
-        tasksAssigned: userTasks.length, // Общее количество задач
-        tasksCompleted: completedTasks.length, // Завершенные задачи
+        tasksAssigned: userTasks.length, // Задачи за выбранный период
+        tasksCompleted: completedTasks.length, // Завершенные задачи за период
         efficiency: userTasks.length > 0 ? Math.round((completedTasks.length / userTasks.length) * 100) : 0
       }
     })

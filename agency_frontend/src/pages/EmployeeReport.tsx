@@ -701,22 +701,10 @@ function EmployeeReport() {
 
                 <div className="bg-gray-50 rounded-lg p-4">
                   <h3 className="font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                    <span>⚙️</span>
-                    Детали задачи
+                    <span>📊</span>
+                    Статус и временные рамки
                   </h3>
                   <div className="space-y-2">
-                    {modalTask.task_type && (
-                      <div className="flex items-start">
-                        <span className="text-gray-600 font-medium min-w-[120px]">Тип задачи:</span>
-                        <span className="text-gray-900">{modalTask.task_type}</span>
-                      </div>
-                    )}
-                    {modalTask.task_format && (
-                      <div className="flex items-start">
-                        <span className="text-gray-600 font-medium min-w-[120px]">Формат:</span>
-                        <span className="text-gray-900">{modalTask.task_format}</span>
-                      </div>
-                    )}
                     <div className="flex items-start">
                       <span className="text-gray-600 font-medium min-w-[120px]">Статус:</span>
                       {modalTask.status === 'done' ? (
@@ -729,12 +717,20 @@ function EmployeeReport() {
                         </span>
                       )}
                     </div>
-                    {modalTask.high_priority && (
+                    <div className="flex items-start">
+                      <span className="text-gray-600 font-medium min-w-[120px]">Создано:</span>
+                      <span className="text-gray-900">{formatDateTime(modalTask.created_at)}</span>
+                    </div>
+                    {modalTask.deadline && (
                       <div className="flex items-start">
-                        <span className="text-gray-600 font-medium min-w-[120px]">Приоритет:</span>
-                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                          🔴 Высокий
-                        </span>
+                        <span className="text-gray-600 font-medium min-w-[120px]">Дедлайн:</span>
+                        <span className="text-gray-900">{renderDeadline(modalTask)}</span>
+                      </div>
+                    )}
+                    {modalTask.finished_at && (
+                      <div className="flex items-start">
+                        <span className="text-gray-600 font-medium min-w-[120px]">Завершено:</span>
+                        <span className="text-gray-900">{formatDateTime(modalTask.finished_at)}</span>
                       </div>
                     )}
                   </div>
@@ -747,46 +743,54 @@ function EmployeeReport() {
                   </h3>
                   <div className="space-y-2">
                     <div className="flex items-start">
-                      <span className="text-gray-600 font-medium min-w-[120px]">Поставил:</span>
-                      <span className="text-gray-900 font-medium">{getUserName(modalTask.author_id)}</span>
+                      <span className="text-gray-600 font-medium min-w-[120px]">Исполнитель:</span>
+                      <span className="text-gray-900">{getUserName(modalTask.executor_id) || 'Не назначен'}</span>
                     </div>
                     <div className="flex items-start">
-                      <span className="text-gray-600 font-medium min-w-[120px]">Исполнитель:</span>
-                      <span className="text-gray-900 font-medium">{getUserName(modalTask.executor_id)}</span>
+                      <span className="text-gray-600 font-medium min-w-[120px]">Автор:</span>
+                      <span className="text-gray-900">{getUserName(modalTask.author_id) || 'Неизвестно'}</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                    <span>🕐</span>
-                    Временные рамки
-                  </h3>
-                  <div className="space-y-2">
-                    <div className="flex items-start">
-                      <span className="text-gray-600 font-medium min-w-[120px]">Создана:</span>
-                      <span className="text-gray-900">{formatDateTime(modalTask.created_at)}</span>
+                {(modalTask.task_type || modalTask.task_format || modalTask.high_priority) && (
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <h3 className="font-semibold text-gray-900 mb-2 flex items-center gap-2">
+                      <span>🏷️</span>
+                      Дополнительная информация
+                    </h3>
+                    <div className="space-y-2">
+                      {modalTask.task_type && (
+                        <div className="flex items-start">
+                          <span className="text-gray-600 font-medium min-w-[120px]">Тип задачи:</span>
+                          <span className="text-gray-900">{modalTask.task_type}</span>
+                        </div>
+                      )}
+                      {modalTask.task_format && (
+                        <div className="flex items-start">
+                          <span className="text-gray-600 font-medium min-w-[120px]">Формат:</span>
+                          <span className="text-gray-900">{modalTask.task_format}</span>
+                        </div>
+                      )}
+                      {modalTask.high_priority && (
+                        <div className="flex items-start">
+                          <span className="text-gray-600 font-medium min-w-[120px]">Приоритет:</span>
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                            🔴 Высокий
+                          </span>
+                        </div>
+                      )}
+                      {modalTask.source && (
+                        <div className="flex items-start">
+                          <span className="text-gray-600 font-medium min-w-[120px]">Источник:</span>
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                            {modalTask.source === 'digital' ? '💻 Digital' : '📋 Общие задачи'}
+                          </span>
+                        </div>
+                      )}
                     </div>
-                    {modalTask.deadline && (
-                      <div className="flex items-start">
-                        <span className="text-gray-600 font-medium min-w-[120px]">Дедлайн:</span>
-                        <span className={`font-medium ${
-                          modalTask.status !== 'done' && new Date(modalTask.deadline) < new Date() 
-                            ? 'text-red-600' 
-                            : 'text-gray-900'
-                        }`}>
-                          {renderDeadline(modalTask)}
-                        </span>
-                      </div>
-                    )}
-                    {modalTask.finished_at && (
-                      <div className="flex items-start">
-                        <span className="text-gray-600 font-medium min-w-[120px]">Завершена:</span>
-                        <span className="text-gray-900">{formatDateTime(modalTask.finished_at)}</span>
-                      </div>
-                    )}
                   </div>
-                </div>
+                )}
               </div>
             </div>
           </div>

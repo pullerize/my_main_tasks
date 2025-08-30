@@ -33,12 +33,20 @@ interface File {
   filename: string
   size: number
   category: string
-  uploadedBy: string
-  uploadedAt: string
-  downloadCount: number
-  isFavorite: boolean
-  fileData?: string // base64 данные файла
-  mimeType?: string // MIME тип файла
+  uploaded_by?: number
+  uploaded_at: string
+  download_count: number
+  is_favorite: boolean
+  project?: Project
+  uploader?: { name: string }
+  mime_type?: string
+  // Legacy fields for localStorage files
+  uploadedBy?: string
+  uploadedAt?: string
+  downloadCount?: number
+  isFavorite?: boolean
+  fileData?: string
+  mimeType?: string
 }
 
 interface Note {
@@ -52,11 +60,20 @@ interface Note {
   updatedAt: string
 }
 
+interface Project {
+  id: number
+  name: string
+  logo?: string
+}
+
 function Resources() {
   const [activeTab, setActiveTab] = useState('links')
+  const [filesSubTab, setFilesSubTab] = useState('general') // 'general' или 'project'
   const [links, setLinks] = useState<Link[]>([])
   const [files, setFiles] = useState<File[]>([])
   const [notes, setNotes] = useState<Note[]>([])
+  const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProject, setSelectedProject] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory] = useState('all')
   const [showAddForm, setShowAddForm] = useState(false)
@@ -271,6 +288,76 @@ function Resources() {
     }
   }, [])
 
+  // Загрузка проектов
+  useEffect(() => {
+    const token = localStorage.getItem('token')
+    if (token) {
+      fetch(`${API_URL}/projects/`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      })
+        .then(response => {
+          if (response.ok) {
+            return response.json()
+          }
+          throw new Error('Failed to load projects')
+        })
+        .then(data => setProjects(Array.isArray(data) ? data : []))
+        .catch(error => {
+          console.error('Error loading projects:', error)
+          setProjects([])
+        })
+    }
+  }, [])
+
+  // Загрузка файлов из API
+  const loadFiles = async () => {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      // Если нет токена, используем localStorage
+      const savedFiles = loadFilesFromStorage()
+      setFiles(savedFiles)
+      return
+    }
+
+    try {
+      const category = filesSubTab === 'general' ? 'general' : 'project'
+      const params = new URLSearchParams({ category })
+      if (selectedProject && filesSubTab === 'project') {
+        params.append('project_id', selectedProject.toString())
+      }
+      
+      const response = await fetch(`${API_URL}/resource-files/?${params}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setFiles(Array.isArray(data) ? data : [])
+      } else {
+        console.error('Failed to load files')
+        // Fallback to localStorage files
+        const savedFiles = loadFilesFromStorage()
+        setFiles(savedFiles)
+      }
+    } catch (error) {
+      console.error('Error loading files:', error)
+      // Fallback to localStorage files
+      const savedFiles = loadFilesFromStorage()
+      setFiles(savedFiles)
+    }
+  }
+
+  // Перезагружаем файлы при изменении подвкладки или выбранного проекта
+  useEffect(() => {
+    if (activeTab === 'files') {
+      loadFiles()
+    }
+  }, [activeTab, filesSubTab, selectedProject])
+
   const categories = {
     links: [
       { value: 'all', label: 'Все' },
@@ -344,11 +431,33 @@ function Resources() {
     setShowEditFileForm(true)
   }
 
-  const handleDeleteFile = (fileId: number) => {
+  const handleDeleteFile = async (fileId: number) => {
     if (window.confirm('Вы уверены, что хотите удалить этот файл?')) {
-      const newFiles = files.filter(file => file.id !== fileId)
-      setFiles(newFiles)
-      saveFilesToStorage(newFiles)
+      const token = localStorage.getItem('token')
+      if (token) {
+        try {
+          const response = await fetch(`${API_URL}/resource-files/${fileId}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+            },
+          })
+          
+          if (response.ok) {
+            await loadFiles() // Перезагружаем список файлов
+          } else {
+            alert('Ошибка при удалении файла')
+          }
+        } catch (error) {
+          console.error('Error deleting file:', error)
+          alert('Ошибка при удалении файла')
+        }
+      } else {
+        // Fallback для режима без API
+        const newFiles = files.filter(file => file.id !== fileId)
+        setFiles(newFiles)
+        saveFilesToStorage(newFiles)
+      }
     }
   }
 
@@ -362,9 +471,40 @@ function Resources() {
     setEditingFile(null)
   }
 
-  const handleToggleFileFavorite = (fileId: number) => {
+  const handleToggleFileFavorite = async (fileId: number) => {
+    const token = localStorage.getItem('token')
+    const file = files.find(f => f.id === fileId)
+    if (!file) return
+    
+    const newFavoriteStatus = !(file.is_favorite || file.isFavorite)
+    
+    if (token) {
+      try {
+        const response = await fetch(`${API_URL}/resource-files/${fileId}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ is_favorite: newFavoriteStatus })
+        })
+        
+        if (response.ok) {
+          await loadFiles() // Перезагружаем список файлов
+          return
+        }
+      } catch (error) {
+        console.error('Error updating file favorite status:', error)
+      }
+    }
+    
+    // Fallback для режима без API
     const updatedFiles = files.map(file => 
-      file.id === fileId ? { ...file, isFavorite: !file.isFavorite } : file
+      file.id === fileId ? { 
+        ...file, 
+        isFavorite: newFavoriteStatus,
+        is_favorite: newFavoriteStatus
+      } : file
     )
     setFiles(updatedFiles)
     saveFilesToStorage(updatedFiles)
@@ -454,25 +594,66 @@ function Resources() {
   }
 
   // Функция для скачивания файла
-  const handleDownloadFile = (file: File) => {
-    // Увеличиваем счетчик скачиваний
+  const handleDownloadFile = async (file: File) => {
+    const token = localStorage.getItem('token')
+    
+    if (token) {
+      try {
+        // Используем API endpoint для скачивания
+        const response = await fetch(`${API_URL}/resource-files/${file.id}/download`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        })
+        
+        if (response.ok) {
+          const blob = await response.blob()
+          const url = window.URL.createObjectURL(blob)
+          const link = document.createElement('a')
+          link.href = url
+          link.download = file.filename
+          link.style.display = 'none'
+          document.body.appendChild(link)
+          link.click()
+          document.body.removeChild(link)
+          window.URL.revokeObjectURL(url)
+          
+          // Обновляем список файлов для получения обновленного счетчика скачиваний
+          await loadFiles()
+          return
+        } else {
+          throw new Error('Failed to download file')
+        }
+      } catch (error) {
+        console.error('Error downloading file:', error)
+        alert('Ошибка при скачивании файла')
+        return
+      }
+    }
+    
+    // Fallback для режима без API - используем старую логику
     const updatedFiles = files.map(f => 
-      f.id === file.id ? { ...f, downloadCount: f.downloadCount + 1 } : f
+      f.id === file.id ? { 
+        ...f, 
+        downloadCount: (f.downloadCount || f.download_count || 0) + 1,
+        download_count: (f.downloadCount || f.download_count || 0) + 1
+      } : f
     )
     setFiles(updatedFiles)
     saveFilesToStorage(updatedFiles)
 
     let dataUrl: string
 
-    if (file.fileData && file.mimeType) {
+    if (file.fileData && (file.mimeType || file.mime_type)) {
       // Если у нас есть сохраненные данные файла, используем их
-      dataUrl = `data:${file.mimeType};base64,${file.fileData}`
+      dataUrl = `data:${file.mimeType || file.mime_type};base64,${file.fileData}`
     } else {
       // Fallback для старых файлов без данных - создаем демонстрационный контент
       const mimeType = getMimeType(file.filename)
+      const uploadedBy = file.uploadedBy || file.uploader?.name || 'Неизвестно'
       
       if (mimeType.startsWith('text/') || mimeType === 'text/csv') {
-        const fileContent = `Файл: ${file.name}\nРазмер: ${formatFileSize(file.size)}\nЗагружен: ${file.uploadedBy}\nКатегория: ${file.category}\n\nЭто демонстрационный файл из системы управления ресурсами.\n\nСодержимое файла:\nЗдесь могли бы быть ваши данные...`
+        const fileContent = `Файл: ${file.name}\nРазмер: ${formatFileSize(file.size)}\nЗагружен: ${uploadedBy}\nКатегория: ${file.category}\n\nЭто демонстрационный файл из системы управления ресурсами.\n\nСодержимое файла:\nЗдесь могли бы быть ваши данные...`
         dataUrl = `data:${mimeType};charset=utf-8,${encodeURIComponent(fileContent)}`
       } else if (mimeType === 'application/json') {
         const jsonContent = {
@@ -480,17 +661,17 @@ function Resources() {
           filename: file.filename,
           size: file.size,
           category: file.category,
-          uploadedBy: file.uploadedBy,
-          uploadedAt: file.uploadedAt,
-          downloadCount: file.downloadCount,
-          isFavorite: file.isFavorite,
+          uploadedBy: uploadedBy,
+          uploadedAt: file.uploadedAt || file.uploaded_at,
+          downloadCount: file.downloadCount || file.download_count,
+          isFavorite: file.isFavorite || file.is_favorite,
           note: "Это демонстрационный файл из системы управления ресурсами"
         }
         const fileContent = JSON.stringify(jsonContent, null, 2)
         dataUrl = `data:${mimeType};charset=utf-8,${encodeURIComponent(fileContent)}`
       } else {
         // Для бинарных файлов без данных создаем информационный файл
-        const fileContent = `ДЕМОНСТРАЦИОННЫЙ ФАЙЛ\n\nОригинальное название: ${file.filename}\nОтображаемое название: ${file.name}\nРазмер: ${formatFileSize(file.size)}\nЗагружен: ${file.uploadedBy}\nКатегория: ${file.category}\n\nЭтот файл был создан как демонстрационный.\nДля получения реального файла загрузите его через форму добавления файла.`
+        const fileContent = `ДЕМОНСТРАЦИОННЫЙ ФАЙЛ\n\nОригинальное название: ${file.filename}\nОтображаемое название: ${file.name}\nРазмер: ${formatFileSize(file.size)}\nЗагружен: ${uploadedBy}\nКатегория: ${file.category}\n\nЭтот файл был создан как демонстрационный.\nДля получения реального файла загрузите его через форму добавления файла.`
         dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(fileContent)}`
       }
     }
@@ -546,112 +727,91 @@ function Resources() {
     return data
   }
 
-  const AddResourceForm = () => {
+  const AddResourceForm = ({ projects }: { projects: Project[] }) => {
     const [title, setTitle] = useState('')
     const [url, setUrl] = useState('')
     const [description, setDescription] = useState('')
-    const category = 'general'
+    const [category, setCategory] = useState('general')
+    const [projectId, setProjectId] = useState<number | null>(null)
     const [selectedFile, setSelectedFile] = useState<globalThis.File | null>(null)
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault()
+      setLoading(true)
       
-      if (activeTab === 'links' && title && url) {
-        const newLink: Link = {
-          id: Math.max(...links.map(l => l.id), 0) + 1,
-          title,
-          url,
-          description,
-          category,
-          isFavorite: false,
-          addedBy: 'Команда',
-          createdAt: new Date().toISOString().split('T')[0]
-        }
-        const updatedLinks = [...links, newLink]
-        setLinks(updatedLinks)
-        saveLinksToStorage(updatedLinks) // Сохраняем в localStorage
-        setShowAddForm(false)
-        // Очищаем форму
-        setTitle('')
-        setUrl('')
-        setDescription('')
-      } else if (activeTab === 'files' && (title || selectedFile)) {
-        if (selectedFile) {
-          // Загружаем реальный файл
-          const reader = new FileReader()
-          reader.onload = (e) => {
-            const result = e.target?.result as string
-            const base64Data = result.split(',')[1] // Убираем префикс data:...;base64,
-            
-            const displayName = title || selectedFile.name.split('.')[0]
-            
-            const newFile: File = {
-              id: Math.max(...files.map(f => f.id), 0) + 1,
-              name: displayName,
-              filename: selectedFile.name,
-              size: selectedFile.size,
-              category,
-              uploadedBy: 'Команда',
-              uploadedAt: new Date().toISOString().split('T')[0],
-              downloadCount: 0,
-              isFavorite: false,
-              fileData: base64Data,
-              mimeType: selectedFile.type || getMimeType(selectedFile.name)
-            }
-            
-            const updatedFiles = [...files, newFile]
-            setFiles(updatedFiles)
-            saveFilesToStorage(updatedFiles)
+      try {
+        if (activeTab === 'links' && title && url) {
+          const newLink: Link = {
+            id: Math.max(...links.map(l => l.id), 0) + 1,
+            title,
+            url,
+            description,
+            category,
+            isFavorite: false,
+            addedBy: 'Команда',
+            createdAt: new Date().toISOString().split('T')[0]
+          }
+          const updatedLinks = [...links, newLink]
+          setLinks(updatedLinks)
+          saveLinksToStorage(updatedLinks)
+          setShowAddForm(false)
+          // Очищаем форму
+          setTitle('')
+          setUrl('')
+          setDescription('')
+        } else if (activeTab === 'files' && selectedFile) {
+          const formData = new FormData()
+          formData.append('file', selectedFile)
+          formData.append('name', title || selectedFile.name)
+          formData.append('category', category)
+          if (category === 'project' && projectId) {
+            formData.append('project_id', projectId.toString())
+          }
+          formData.append('is_favorite', 'false')
+          
+          const response = await fetch(`${API_URL}/resource-files/`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('token')}`,
+            },
+            body: formData
+          })
+          
+          if (response.ok) {
+            await loadFiles()
             setShowAddForm(false)
             // Очищаем форму
             setTitle('')
             setDescription('')
             setSelectedFile(null)
+            setCategory('general')
+            setProjectId(null)
+          } else {
+            console.error('Failed to upload file')
           }
-          reader.readAsDataURL(selectedFile)
-        } else {
-          // Создаем демонстрационный файл без реального содержимого
-          const fileName = title.toLowerCase().replace(/\s+/g, '_') + '.txt'
-          const fileSize = Math.floor(Math.random() * 5000000) + 100000
-          
-          const newFile: File = {
-            id: Math.max(...files.map(f => f.id), 0) + 1,
-            name: title,
-            filename: fileName,
-            size: fileSize,
+        } else if (activeTab === 'notes' && title && description) {
+          const newNote: Note = {
+            id: Math.max(...notes.map(n => n.id), 0) + 1,
+            title,
+            content: description,
             category,
-            uploadedBy: 'Команда',
-            uploadedAt: new Date().toISOString().split('T')[0],
-            downloadCount: 0,
-            isFavorite: false
+            isPinned: false,
+            author: 'Команда',
+            createdAt: new Date().toISOString().split('T')[0],
+            updatedAt: new Date().toISOString().split('T')[0]
           }
-          const updatedFiles = [...files, newFile]
-          setFiles(updatedFiles)
-          saveFilesToStorage(updatedFiles)
+          const updatedNotes = [...notes, newNote]
+          setNotes(updatedNotes)
+          saveNotesToStorage(updatedNotes)
           setShowAddForm(false)
           // Очищаем форму
           setTitle('')
           setDescription('')
-          setSelectedFile(null)
         }
-      } else if (activeTab === 'notes' && title && description) {
-        const newNote: Note = {
-          id: Math.max(...notes.map(n => n.id), 0) + 1,
-          title,
-          content: description,
-          category,
-          isPinned: false,
-          author: 'Команда',
-          createdAt: new Date().toISOString().split('T')[0],
-          updatedAt: new Date().toISOString().split('T')[0]
-        }
-        const updatedNotes = [...notes, newNote]
-        setNotes(updatedNotes)
-        saveNotesToStorage(updatedNotes)
-        setShowAddForm(false)
-        // Очищаем форму
-        setTitle('')
-        setDescription('')
+      } catch (error) {
+        console.error('Error submitting form:', error)
+      } finally {
+        setLoading(false)
       }
     }
 
@@ -690,17 +850,61 @@ function Resources() {
               </>
             )}
             {activeTab === 'files' && (
-              <input
-                type="file"
-                onChange={(e) => {
-                  const file = e.target.files?.[0]
-                  setSelectedFile(file || null)
-                  if (file && !title) {
-                    setTitle(file.name.split('.')[0])
-                  }
-                }}
-                className="w-full p-2 border border-gray-300 rounded-lg"
-              />
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Категория
+                  </label>
+                  <select
+                    value={category}
+                    onChange={(e) => {
+                      setCategory(e.target.value)
+                      if (e.target.value === 'general') {
+                        setProjectId(null)
+                      }
+                    }}
+                    className="w-full p-2 border border-gray-300 rounded-lg"
+                    required
+                  >
+                    <option value="general">Общие файлы</option>
+                    <option value="project">Файлы проектов</option>
+                  </select>
+                </div>
+                
+                {category === 'project' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Проект
+                    </label>
+                    <select
+                      value={projectId || ''}
+                      onChange={(e) => setProjectId(e.target.value ? parseInt(e.target.value) : null)}
+                      className="w-full p-2 border border-gray-300 rounded-lg"
+                      required
+                    >
+                      <option value="">Выберите проект</option>
+                      {Array.isArray(projects) && projects.map(project => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                
+                <input
+                  type="file"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    setSelectedFile(file || null)
+                    if (file && !title) {
+                      setTitle(file.name.split('.')[0])
+                    }
+                  }}
+                  className="w-full p-2 border border-gray-300 rounded-lg"
+                  required
+                />
+              </>
             )}
             {activeTab === 'notes' && (
               <textarea
@@ -715,9 +919,10 @@ function Resources() {
             <div className="flex gap-2">
               <button
                 type="submit"
-                className="flex-1 bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600"
+                disabled={loading}
+                className="flex-1 bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 disabled:opacity-50"
               >
-                Сохранить
+                {loading ? 'Сохранение...' : 'Сохранить'}
               </button>
               <button
                 type="button"
@@ -1025,6 +1230,37 @@ function Resources() {
         })}
       </div>
 
+      {/* Подвкладки для файлов */}
+      {activeTab === 'files' && (
+        <div className="flex space-x-1 mb-6 bg-blue-50 p-1 rounded-lg">
+          <button
+            onClick={() => {
+              setFilesSubTab('general')
+              setSelectedProject(null)
+            }}
+            className={`flex items-center space-x-2 px-4 py-2 rounded-md transition-colors ${
+              filesSubTab === 'general'
+                ? 'bg-white text-blue-600 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            <span>Общие файлы</span>
+          </button>
+          <button
+            onClick={() => setFilesSubTab('project')}
+            className={`flex items-center space-x-2 px-4 py-2 rounded-md transition-colors ${
+              filesSubTab === 'project'
+                ? 'bg-white text-blue-600 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            <span>Файлы проектов</span>
+          </button>
+        </div>
+      )}
+
       {/* Панель управления */}
       <div className="flex flex-col sm:flex-row gap-4 mb-6">
         <div className="flex-1 relative">
@@ -1037,6 +1273,26 @@ function Resources() {
             className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
+        
+        {/* Фильтр по проектам для файлов проектов */}
+        {activeTab === 'files' && filesSubTab === 'project' && (
+          <div className="flex items-center space-x-2">
+            <Filter className="w-4 h-4 text-gray-500" />
+            <select
+              value={selectedProject || ''}
+              onChange={(e) => setSelectedProject(e.target.value ? parseInt(e.target.value) : null)}
+              className="border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="">Все проекты</option>
+              {Array.isArray(projects) && projects.map(project => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        
         <button
           onClick={() => setShowAddForm(true)}
           className="flex items-center space-x-2 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600"
@@ -1120,11 +1376,11 @@ function Resources() {
                     <button
                       onClick={() => handleToggleFileFavorite(item.id)}
                       className="p-1 rounded hover:bg-yellow-100 transition-colors"
-                      title={item.isFavorite ? "Убрать из избранного" : "Добавить в избранное"}
+                      title={(item.is_favorite || item.isFavorite) ? "Убрать из избранного" : "Добавить в избранное"}
                     >
                       <Star 
                         className={`w-4 h-4 transition-colors ${
-                          item.isFavorite 
+                          (item.is_favorite || item.isFavorite) 
                             ? 'text-yellow-500 fill-current' 
                             : 'text-gray-300 hover:text-yellow-400'
                         }`} 
@@ -1151,10 +1407,13 @@ function Resources() {
                 <div className="flex-grow">
                   <div className="space-y-2 text-sm text-gray-600 mb-3">
                     <div>Размер: {formatFileSize(item.size)}</div>
-                    <div>Скачиваний: {item.downloadCount}</div>
+                    <div>Скачиваний: {item.download_count || item.downloadCount || 0}</div>
+                    {item.project && (
+                      <div>Проект: {item.project.name}</div>
+                    )}
                   </div>
                   <div className="text-xs text-gray-500 mb-3">
-                    {formatDate(item.uploadedAt)}
+                    {item.uploaded_at ? formatDate(item.uploaded_at) : (item.uploadedAt ? formatDate(item.uploadedAt) : 'Неизвестно')}
                   </div>
                 </div>
                 <button 
@@ -1229,7 +1488,7 @@ function Resources() {
       </div>
 
       {/* Модальное окно добавления */}
-      {showAddForm && <AddResourceForm />}
+      {showAddForm && <AddResourceForm projects={projects} />}
       
       {/* Модальное окно редактирования */}
       {showEditForm && <EditLinkForm />}

@@ -66,6 +66,7 @@ class Project(BaseModel):
     start_date: datetime | None = None
     end_date: datetime | None = None
     high_priority: bool = False
+    is_archived: bool | None = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -347,3 +348,36 @@ class DigitalProjectExpense(DigitalProjectExpenseBase):
         return v
     
     model_config = ConfigDict(from_attributes=True)
+
+
+class ResourceFileBase(BaseModel):
+    name: str
+    category: str = "general"
+    project_id: Optional[int] = None
+    is_favorite: bool = False
+
+
+class ResourceFileCreate(ResourceFileBase):
+    pass
+
+
+class ResourceFile(ResourceFileBase):
+    id: int
+    filename: str
+    file_path: str
+    size: int
+    mime_type: Optional[str] = None
+    uploaded_by: int
+    uploaded_at: datetime
+    download_count: int = 0
+    project: Optional[Project] = None
+    uploader: Optional[User] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ResourceFileUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    project_id: Optional[int] = None
+    is_favorite: Optional[bool] = None

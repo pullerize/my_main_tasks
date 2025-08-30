@@ -30,7 +30,13 @@
       "Bash(apt list:*)",
       "Bash(npm run dev:*)",
       "Bash(npm run build:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Read(//home/**)",
+      "Bash(export SQLALCHEMY_DATABASE_URL=\"sqlite:////home/pullerize/8bit_db/app.db\")",
+      "Bash(cd:*)",
+      "Bash(cd:*)",
+      "Bash(cd:*)",
+      "Bash(cd:*)"
     ],
     "deny": [],
     "ask": [],

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState, useEffect } from 'react'
 import { API_URL } from '../api'
 
 interface Tax {
@@ -8,99 +8,64 @@ interface Tax {
 }
 
 function Taxes() {
-  const [items, setItems] = useState<Tax[]>([])
-  const [show, setShow] = useState(false)
-  const [editing, setEditing] = useState<Tax | null>(null)
-  const [name, setName] = useState('')
-  const [rate, setRate] = useState('')
-  const token = localStorage.getItem('token')
+  const [taxes, setTaxes] = useState<Tax[]>([])
+  const [loading, setLoading] = useState(true)
 
-  const load = async () => {
-    const res = await fetch(`${API_URL}/taxes/`, { headers: { Authorization: `Bearer ${token}` } })
-    if (res.ok) setItems(await res.json())
-  }
+  useEffect(() => {
+    fetchTaxes()
+  }, [])
 
-  useEffect(() => { load() }, [])
-
-  const openAdd = () => {
-    setEditing(null)
-    setName('')
-    setRate('')
-    setShow(true)
-  }
-
-  const openEdit = (t: Tax) => {
-    setEditing(t)
-    setName(t.name)
-    setRate(String(t.rate))
-    setShow(true)
-  }
-
-  const save = async () => {
-    const payload = { name, rate: parseFloat(rate) }
-    if (editing) {
-      await fetch(`${API_URL}/taxes/${editing.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload)
+  const fetchTaxes = async () => {
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/taxes/`, {
+        headers: { Authorization: `Bearer ${token}` }
       })
-    } else {
-      await fetch(`${API_URL}/taxes/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload)
-      })
+      if (response.ok) {
+        const data = await response.json()
+        setTaxes(data)
+      }
+    } catch (error) {
+      console.error('Error fetching taxes:', error)
+    } finally {
+      setLoading(false)
     }
-    setShow(false)
-    load()
   }
 
-  const remove = async (id: number) => {
-    await fetch(`${API_URL}/taxes/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
-    load()
+  if (loading) {
+    return <div className="p-6">Загрузка налогов...</div>
   }
 
   return (
-    <div className="p-4">
-      <div className="flex justify-between items-center mb-4">
-        <h1 className="text-2xl">Налоги</h1>
-        <button className="bg-blue-500 text-white px-3 py-1 rounded" onClick={openAdd}>Добавить</button>
-      </div>
-      <table className="min-w-full bg-white border">
-        <thead>
-          <tr className="bg-gray-100">
-            <th className="px-4 py-2 border">Название</th>
-            <th className="px-4 py-2 border">Ставка</th>
-            <th className="px-4 py-2 border"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map(t => (
-            <tr key={t.id} className="text-center border-t">
-              <td className="px-4 py-2 border">{t.name}</td>
-              <td className="px-4 py-2 border">{t.rate}</td>
-              <td className="px-4 py-2 border space-x-2">
-                <button className="text-blue-500" onClick={() => openEdit(t)}>Редактировать</button>
-                <button className="text-red-500" onClick={() => remove(t.id)}>Удалить</button>
-              </td>
+    <div className="p-6">
+      <h2 className="text-xl font-bold mb-4">Управление налогами</h2>
+      
+      <div className="bg-white rounded-lg shadow overflow-hidden">
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Название
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Ставка
+              </th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {show && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-          <div className="bg-white p-4 rounded w-96">
-            <h2 className="text-xl mb-2">{editing ? 'Редактировать налог' : 'Новый налог'}</h2>
-            <input className="border p-2 w-full mb-2" placeholder="Название" value={name} onChange={e => setName(e.target.value)} />
-            <input className="border p-2 w-full mb-4" placeholder="Ставка" value={rate} onChange={e => setRate(e.target.value)} />
-            <div className="flex justify-end">
-              <button className="mr-2 px-4 py-1 border rounded" onClick={() => setShow(false)}>Отмена</button>
-              <button className="bg-blue-500 text-white px-4 py-1 rounded" onClick={save}>Сохранить</button>
-            </div>
-          </div>
-        </div>
-      )}
+          </thead>
+          <tbody className="bg-white divide-y divide-gray-200">
+            {taxes.map((tax) => (
+              <tr key={tax.id}>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                  {tax.name}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                  {(tax.rate * 100).toFixed(1)}%
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

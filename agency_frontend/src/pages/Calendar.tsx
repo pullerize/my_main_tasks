@@ -77,7 +77,8 @@ function Calendar() {
       setShootings(Array.isArray(sh) ? sh : [])
       setOperators(Array.isArray(ops) ? ops : [])
       setUsers(Array.isArray(us) ? us : [])
-      setProjects(Array.isArray(pr) ? pr : [])
+      const activeProjects = Array.isArray(pr) ? pr.filter((p: any) => !p.is_archived) : []
+      setProjects(activeProjects)
     } catch (error) {
       setShootings([])
       setOperators([])
@@ -340,7 +341,7 @@ function Calendar() {
                     onChange={e=> setManagerIds(managerIds.map((x,i)=> i===idx? e.target.value: x))}
                   >
                     <option value="">Выберите менеджера</option>
-                    {Array.isArray(users) && users.filter(u=>u.role!=='designer' && u.role!=='digital' && (!Array.isArray(managerIds) || !managerIds.includes(String(u.id)) || String(u.id)===m)).map(u=>(
+                    {Array.isArray(users) && users.filter(u=>(u.role==='smm_manager' || u.role==='head_smm') && u.role!=='inactive' && (!Array.isArray(managerIds) || !managerIds.includes(String(u.id)) || String(u.id)===m)).map(u=>(
                       <option key={u.id} value={u.id}>{u.name}</option>
                     ))}
                   </select>
@@ -397,7 +398,7 @@ function Calendar() {
                 onChange={e => setFinishManagers(Array.isArray(finishManagers) ? finishManagers.map((x,i)=>i===idx?e.target.value:x) : [])}
               >
                 <option value="">Выберите менеджера</option>
-                {Array.isArray(users) && users.filter(u=>u.role!=='designer' && u.role!=='digital' && (!Array.isArray(finishManagers) || !finishManagers.includes(String(u.id)) || String(u.id)===m)).map(u=>(
+                {Array.isArray(users) && users.filter(u=>(u.role==='smm_manager' || u.role==='head_smm') && u.role!=='inactive' && (!Array.isArray(finishManagers) || !finishManagers.includes(String(u.id)) || String(u.id)===m)).map(u=>(
                   <option key={u.id} value={u.id}>{u.name}</option>
                 ))}
               </select>
