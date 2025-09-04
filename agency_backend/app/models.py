@@ -10,6 +10,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Date,
     Float,
+    BigInteger,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime, timedelta
@@ -29,12 +30,15 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    login = Column(String, unique=True, index=True)
+    telegram_username = Column(String, unique=True, index=True, nullable=True)  # Заменили login на telegram_username
+    telegram_id = Column(BigInteger, unique=True, index=True, nullable=True)  # Telegram ID пользователя
     name = Column(String, index=True)
     hashed_password = Column(String)
     role = Column(Enum(RoleEnum), default=RoleEnum.designer)
     birth_date = Column(Date, nullable=True)
     contract_path = Column(String, nullable=True)
+    telegram_registered_at = Column(DateTime, nullable=True)  # Когда зарегистрировался в Telegram
+    is_active = Column(Boolean, default=True)  # Активен ли пользователь
 
     tasks = relationship(
         "Task",
@@ -47,6 +51,8 @@ class User(Base):
         foreign_keys="Task.author_id",
         back_populates="author",
     )
+    
+    expenses = relationship("EmployeeExpense", back_populates="user")
 
 class TaskStatus(str, enum.Enum):
     in_progress = "in_progress"
@@ -64,7 +70,7 @@ class Task(Base):
     status = Column(Enum(TaskStatus), default=TaskStatus.in_progress)
     task_type = Column(String, nullable=True)
     task_format = Column(String, nullable=True)
-    high_priority = Column(Boolean, default=False)
+    high_priority = Column(Boolean, default=False, nullable=True)
     executor_id = Column(Integer, ForeignKey("users.id"))
     author_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -93,6 +99,8 @@ class Operator(Base):
     role = Column(Enum(OperatorRole))
     color = Column(String, default="#ff0000")
     price_per_video = Column(Integer, default=0)
+    is_salaried = Column(Boolean, default=False)  # Работает за зарплату
+    monthly_salary = Column(Integer, nullable=True)  # Месячная зарплата
 
 def first_day_current_month() -> datetime:
     now = datetime.utcnow()
@@ -119,7 +127,7 @@ class Project(Base):
     posts_count = Column(Integer, default=0)
     start_date = Column(DateTime, default=first_day_current_month)
     end_date = Column(DateTime, default=last_day_current_month)
-    high_priority = Column(Boolean, default=False)
+    high_priority = Column(Boolean, default=False, nullable=True)
     is_archived = Column(Boolean, default=False)
 
 class Shooting(Base):
@@ -141,13 +149,18 @@ class Shooting(Base):
     operator = relationship("Operator")
 
 
-class ExpenseItem(Base):
-    __tablename__ = "expense_items"
+class ExpenseCategory(Base):
+    __tablename__ = "expense_categories"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True)
-    is_common = Column(Boolean, default=False)
-    unit_cost = Column(Integer, default=0)
+    name = Column(String, unique=True, nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    project_expenses = relationship("ProjectExpense", back_populates="category")
+    common_expenses = relationship("CommonExpense", back_populates="category")
 
 
 
@@ -180,12 +193,33 @@ class ProjectExpense(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"))
+    category_id = Column(Integer, ForeignKey("expense_categories.id"), nullable=True)
     name = Column(String)
-    amount = Column(Integer)
-    comment = Column(String, nullable=True)
+    amount = Column(Float)
+    description = Column(Text, nullable=True)
+    date = Column(Date, default=datetime.utcnow().date)
     created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     project = relationship("Project")
+    category = relationship("ExpenseCategory", back_populates="project_expenses")
+    creator = relationship("User")
+
+
+class CommonExpense(Base):
+    __tablename__ = "common_expenses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    category_id = Column(Integer, ForeignKey("expense_categories.id"), nullable=True)
+    name = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
+    description = Column(Text, nullable=True)
+    date = Column(Date, default=datetime.utcnow().date)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    category = relationship("ExpenseCategory", back_populates="common_expenses")
+    creator = relationship("User")
 
 
 class ProjectReceipt(Base):
@@ -286,7 +320,7 @@ class DigitalProjectTask(Base):
     links = Column(Text, nullable=True)
     deadline = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    high_priority = Column(Boolean, default=False)
+    high_priority = Column(Boolean, default=False, nullable=True)
     status = Column(String, default="in_progress")  # in_progress, completed
 
     project = relationship("DigitalProject", back_populates="tasks")
@@ -342,6 +376,20 @@ class ResourceFile(Base):
 
     project = relationship("Project")
     uploader = relationship("User")
+
+
+class EmployeeExpense(Base):
+    __tablename__ = "employee_expenses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    name = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
+    description = Column(Text, nullable=True)
+    date = Column(Date, default=datetime.utcnow().date)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", back_populates="expenses")
 
 
 class Setting(Base):

@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { API_URL } from '../api'
+import { formatDateUTC5, getCurrentDateUTC5 } from '../utils/dateUtils'
+import { usePersistedState } from '../utils/filterStorage'
 import {
   Link2,
   FileText,
@@ -67,14 +69,14 @@ interface Project {
 }
 
 function Resources() {
-  const [activeTab, setActiveTab] = useState('links')
-  const [filesSubTab, setFilesSubTab] = useState('general') // 'general' или 'project'
+  const [activeTab, setActiveTab] = usePersistedState('resources_active_tab', 'links')
+  const [filesSubTab, setFilesSubTab] = usePersistedState('resources_files_sub_tab', 'general') // 'general' или 'project'
   const [links, setLinks] = useState<Link[]>([])
   const [files, setFiles] = useState<File[]>([])
   const [notes, setNotes] = useState<Note[]>([])
   const [projects, setProjects] = useState<Project[]>([])
-  const [selectedProject, setSelectedProject] = useState<number | null>(null)
-  const [searchQuery, setSearchQuery] = useState('')
+  const [selectedProject, setSelectedProject] = usePersistedState<number | null>('resources_selected_project', null)
+  const [searchQuery, setSearchQuery] = usePersistedState('resources_search_query', '')
   const [selectedCategory] = useState('all')
   const [showAddForm, setShowAddForm] = useState(false)
   const [showEditForm, setShowEditForm] = useState(false)
@@ -391,7 +393,7 @@ function Resources() {
   }
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('ru-RU')
+    return formatDateUTC5(dateString);
   }
 
   const handleEditLink = (link: Link) => {
@@ -749,7 +751,7 @@ function Resources() {
             category,
             isFavorite: false,
             addedBy: 'Команда',
-            createdAt: new Date().toISOString().split('T')[0]
+            createdAt: getCurrentDateUTC5()
           }
           const updatedLinks = [...links, newLink]
           setLinks(updatedLinks)
@@ -797,8 +799,8 @@ function Resources() {
             category,
             isPinned: false,
             author: 'Команда',
-            createdAt: new Date().toISOString().split('T')[0],
-            updatedAt: new Date().toISOString().split('T')[0]
+            createdAt: getCurrentDateUTC5(),
+            updatedAt: getCurrentDateUTC5()
           }
           const updatedNotes = [...notes, newNote]
           setNotes(updatedNotes)
@@ -1081,7 +1083,7 @@ function Resources() {
           title,
           content,
           category,
-          updatedAt: new Date().toISOString().split('T')[0]
+          updatedAt: getCurrentDateUTC5()
         })
       }
     }

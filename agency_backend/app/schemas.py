@@ -1,26 +1,30 @@
-from datetime import datetime, date
-from typing import Optional, List
+from datetime import datetime
+from datetime import date as DateType  # Rename to avoid conflicts
+from typing import Optional, List, Union
 from pydantic import BaseModel, field_validator, ConfigDict
 
 class UserBase(BaseModel):
-    login: str
+    telegram_username: Optional[str] = None  # Изменили с login на telegram_username
     name: str
     role: str
-    birth_date: Optional[date] = None
+    birth_date: Optional[DateType] = None
 
 class UserCreate(UserBase):
     password: str
 
 class UserUpdate(BaseModel):
-    login: Optional[str] = None
+    telegram_username: Optional[str] = None  # Изменили с login на telegram_username
     name: Optional[str] = None
     password: Optional[str] = None
     role: Optional[str] = None
-    birth_date: Optional[date] = None
+    birth_date: Optional[DateType] = None
 
 class User(UserBase):
     id: int
+    telegram_id: Optional[int] = None
     contract_path: Optional[str] = None
+    telegram_registered_at: Optional[datetime] = None
+    is_active: bool = True
     model_config = ConfigDict(from_attributes=True)
 
 class TaskBase(BaseModel):
@@ -30,7 +34,7 @@ class TaskBase(BaseModel):
     deadline: Optional[datetime] = None
     task_type: Optional[str] = None
     task_format: Optional[str] = None
-    high_priority: Optional[bool] = False
+    high_priority: Optional[bool] = None
 
 class TaskCreate(TaskBase):
     executor_id: Optional[int] = None
@@ -42,7 +46,7 @@ class Task(TaskBase):
     author_id: Optional[int]
     created_at: datetime
     finished_at: Optional[datetime] = None
-    high_priority: bool = False
+    high_priority: Optional[bool] = None
     model_config = ConfigDict(from_attributes=True)
 
 class OperatorBase(BaseModel):
@@ -50,9 +54,19 @@ class OperatorBase(BaseModel):
     role: str
     color: Optional[str] = None
     price_per_video: Optional[float] = None
+    is_salaried: Optional[bool] = False
+    monthly_salary: Optional[int] = None
 
 class OperatorCreate(OperatorBase):
     pass
+
+class OperatorUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    color: Optional[str] = None
+    price_per_video: Optional[float] = None
+    is_salaried: Optional[bool] = None
+    monthly_salary: Optional[int] = None
 
 class Operator(OperatorBase):
     id: int
@@ -166,21 +180,6 @@ class ClientExpense(ClientExpenseBase):
 class ClientExpenseClose(BaseModel):
     amount: float
     comment: Optional[str] = None
-
-
-class ExpenseItemBase(BaseModel):
-    name: str
-    is_common: bool = False
-    unit_cost: int | None = None
-
-
-class ExpenseItemCreate(ExpenseItemBase):
-    pass
-
-
-class ExpenseItem(ExpenseItemBase):
-    id: int
-    model_config = ConfigDict(from_attributes=True)
 
 
 class TaxBase(BaseModel):
@@ -381,3 +380,210 @@ class ResourceFileUpdate(BaseModel):
     category: Optional[str] = None
     project_id: Optional[int] = None
     is_favorite: Optional[bool] = None
+
+
+# User Statistics Schemas
+class WeeklyActivity(BaseModel):
+    day: str
+    completed_tasks: int
+    assigned_tasks: int
+
+
+class ProductivityMetrics(BaseModel):
+    average_tasks_per_day: float
+    best_streak: int
+    current_day_tasks: int
+
+
+class RecentTask(BaseModel):
+    title: str
+    project: str
+    completed_at: str
+    status: str
+
+
+class UserStats(BaseModel):
+    total_projects: int
+    completed_tasks: int
+    active_days: int
+    total_assigned_tasks: int
+    pending_tasks: int
+    completion_rate: float
+    this_month_tasks: int
+    this_month_completions: int
+    weekly_activity: List[WeeklyActivity]
+    recent_tasks: List[RecentTask]
+
+
+# Expense Category Schemas
+class ExpenseCategoryBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    is_active: bool = True
+
+
+class ExpenseCategoryCreate(ExpenseCategoryBase):
+    pass
+
+
+class ExpenseCategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ExpenseCategory(ExpenseCategoryBase):
+    id: int
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Common Expense Schemas
+class CommonExpenseBase(BaseModel):
+    name: str
+    amount: float
+    description: Optional[str] = None
+    category_id: Optional[int] = None
+    date: Optional[DateType] = None
+
+
+class CommonExpenseCreate(CommonExpenseBase):
+    pass
+
+
+class CommonExpenseUpdate(BaseModel):
+    name: Optional[str] = None
+    amount: Optional[float] = None
+    description: Optional[str] = None
+    category_id: Optional[int] = None
+    date: Optional[DateType] = None
+
+
+class CommonExpense(CommonExpenseBase):
+    id: int
+    created_at: datetime
+    created_by: Optional[int] = None
+    category: Optional[ExpenseCategory] = None
+    creator: Optional[User] = None
+    date: Optional[DateType] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Project Expense Create Schema
+class ProjectExpenseCreate(BaseModel):
+    name: str
+    amount: float
+    description: Optional[str] = None
+    project_id: int
+    category_id: Optional[int] = None
+    date: Optional[DateType] = None
+
+# Project Expense Update Schema
+class ProjectExpenseUpdate(BaseModel):
+    name: Optional[str] = None
+    amount: Optional[float] = None
+    description: Optional[str] = None
+    category_id: Optional[int] = None
+    date: Optional[DateType] = None
+
+
+class ProjectExpense(BaseModel):
+    id: int
+    project_id: int
+    category_id: Optional[int] = None
+    name: str
+    amount: float
+    description: Optional[str] = None
+    date: DateType
+    created_at: datetime
+    created_by: Optional[int] = None
+    category: Optional[ExpenseCategory] = None
+    creator: Optional[User] = None
+    model_config = ConfigDict(from_attributes=True)
+
+# Extended Project Expense Schema for the new page
+class ProjectExpenseDetailed(BaseModel):
+    id: int
+    project_id: int
+    project_name: str
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None
+    name: str
+    amount: float
+    description: Optional[str] = None
+    date: DateType
+    created_at: datetime
+    created_by: Optional[int] = None
+    creator_name: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Expense Report Schemas
+class ExpenseReportItem(BaseModel):
+    id: int
+    name: str
+    amount: float
+    description: Optional[str] = None
+    date: DateType
+    category_name: Optional[str] = None
+    project_name: Optional[str] = None
+    expense_type: str  # "project" or "common"
+    created_by_name: Optional[str] = None
+
+
+class ExpenseReport(BaseModel):
+    total_amount: float
+    project_expenses: float
+    common_expenses: float
+    items: List[ExpenseReportItem]
+    categories_breakdown: dict  # category_name -> total_amount
+
+
+# Employee Expense Schemas
+class EmployeeExpenseBase(BaseModel):
+    name: str
+    amount: float  
+    description: Optional[str] = None
+    date: Optional[DateType] = None
+
+class EmployeeExpenseCreate(EmployeeExpenseBase):
+    pass
+
+class EmployeeExpenseUpdate(BaseModel):
+    name: Optional[str] = None
+    amount: Optional[float] = None
+    description: Optional[str] = None
+    date: Optional[DateType] = None
+
+class EmployeeExpense(EmployeeExpenseBase):
+    id: int
+    user_id: int
+    created_at: datetime
+    date: DateType  # Override the optional date from base class
+    user: Optional[User] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Expense Report Schemas for the new expense reports page
+class ExpenseReportSummary(BaseModel):
+    total_expenses: float  # Общие расходы
+    project_expenses: float  # Проектные расходы
+    employee_expenses: float  # Расходы сотрудников
+    
+class EmployeeExpenseReport(BaseModel):
+    user_id: int
+    user_name: str
+    role: str
+    total_amount: float
+    expenses: List[EmployeeExpense]
+    
+class OperatorExpenseReport(BaseModel):
+    operator_id: int
+    operator_name: str
+    role: str  # mobile/video
+    is_salaried: bool
+    monthly_salary: Optional[int]
+    price_per_video: Optional[int]
+    videos_completed: int
+    total_amount: float  # Общая сумма за завершенные видео или зарплата

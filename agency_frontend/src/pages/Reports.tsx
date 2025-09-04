@@ -51,7 +51,6 @@ function Reports() {
   const [section, setSection] = useState<'projects' | 'employees'>('projects')
   const [projects, setProjects] = useState<Project[]>([])
   const [projectId, setProjectId] = useState<number | ''>('')
-  const [expenseItems, setExpenseItems] = useState<{id:number; name:string; is_common:boolean}[]>([])
   const [month, setMonth] = useState(new Date().getMonth() + 1)
   const [report, setReport] = useState<Report | null>(null)
 
@@ -167,13 +166,6 @@ function Reports() {
     }
   }
 
-  const loadExpenseItems = async () => {
-    const res = await fetch(`${API_URL}/expense_items/`, { headers: { Authorization: `Bearer ${token}` } })
-    if (res.ok) {
-      const items = await res.json()
-      setExpenseItems(items.filter((i: any) => !i.is_common))
-    }
-  }
 
   const loadReport = async (pid: number, m: number = month) => {
     const res = await fetch(`${API_URL}/projects/${pid}/report?month=${m}`, { headers: { Authorization: `Bearer ${token}` } })
@@ -202,7 +194,7 @@ function Reports() {
     }
   }, [projectId, taxOptions])
 
-  useEffect(() => { loadProjects(); loadExpenseItems(); loadTaxes() }, [])
+  useEffect(() => { loadProjects(); loadTaxes() }, [])
   useEffect(() => { if (projectId) loadReport(projectId as number, month) }, [projectId, month])
 
   const openEditField = (field: 'contract_amount') => {
@@ -877,12 +869,12 @@ function Reports() {
                     <h2 className="text-lg font-semibold">{editingExpense ? 'Редактировать расход' : 'Новый расход'}</h2>
                     <label className="block">
                       <span className="text-sm text-gray-500">Наименование</span>
-                      <select className="border p-2 w-full" value={expName} onChange={e => setExpName(e.target.value)}>
-                        <option value="">Выберите расход</option>
-                        {expenseItems.map(item => (
-                          <option key={item.id} value={item.name}>{item.name}</option>
-                        ))}
-                      </select>
+                      <input 
+                        className="border p-2 w-full" 
+                        value={expName} 
+                        onChange={e => setExpName(e.target.value)}
+                        placeholder="Введите название расхода"
+                      />
                     </label>
                     <label className="block">
                       <span className="text-sm text-gray-500">Сумма</span>

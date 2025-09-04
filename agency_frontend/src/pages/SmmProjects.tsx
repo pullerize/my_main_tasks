@@ -3,16 +3,31 @@ import { useLocation } from 'react-router-dom'
 import Tasks from './Tasks'
 import Calendar from './Calendar'
 import ProjectsOverview from './ProjectsOverview'
+import { usePersistedState } from '../utils/filterStorage'
 
 function SmmProjects() {
-  const [activeTab, setActiveTab] = useState('tasks')
+  const [activeTab, setActiveTab] = usePersistedState('active_tab_smm_projects', 'tasks')
   const location = useLocation()
+  const role = localStorage.getItem('role')
 
-  const tabs = [
-    { id: 'tasks', label: 'Задачи', component: Tasks },
-    { id: 'calendar', label: 'Календарь съемок', component: Calendar },
-    { id: 'projects', label: 'Успеваемость по проектам', component: ProjectsOverview }
-  ]
+  // Определяем доступные вкладки в зависимости от роли
+  const getAvailableTabs = () => {
+    const allTabs = [
+      { id: 'tasks', label: 'Задачи', component: Tasks },
+      { id: 'calendar', label: 'Календарь съемок', component: Calendar },
+      { id: 'projects', label: 'Успеваемость по проектам', component: ProjectsOverview }
+    ]
+
+    // Дизайнеры видят только Задачи
+    if (role === 'designer') {
+      return allTabs.filter(tab => tab.id === 'tasks')
+    }
+    
+    // СММ менеджеры, Digital и администраторы видят все вкладки
+    return allTabs
+  }
+
+  const tabs = getAvailableTabs()
 
   const ActiveComponent = tabs.find(tab => tab.id === activeTab)?.component || Tasks
 
@@ -21,7 +36,13 @@ function SmmProjects() {
     if (location.state?.fromProjectDetail) {
       setActiveTab('projects')
     }
-  }, [location])
+    
+    // Проверяем, есть ли доступ к текущей вкладке
+    const availableTabIds = tabs.map(tab => tab.id)
+    if (!availableTabIds.includes(activeTab)) {
+      setActiveTab('tasks') // Переключаем на доступную вкладку
+    }
+  }, [location, tabs, activeTab])
 
   return (
     <div className="w-full h-full overflow-hidden">

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { API_URL } from '../api'
 
 function Login() {
-  const [login, setLogin] = useState('')
+  const [telegramUsername, setTelegramUsername] = useState('')
   const [password, setPassword] = useState('')
   const [remember, setRemember] = useState(false)
   const [error, setError] = useState('')
@@ -13,7 +13,7 @@ function Login() {
     const savedLogin = localStorage.getItem('rememberLogin')
     const savedPass = localStorage.getItem('rememberPass')
     if (savedLogin && savedPass) {
-      setLogin(savedLogin)
+      setTelegramUsername(savedLogin)
       setPassword(savedPass)
       setRemember(true)
     }
@@ -30,29 +30,46 @@ function Login() {
         },
         body: new URLSearchParams({
           grant_type: 'password',
-          username: login,
+          username: telegramUsername,
           password,
         }),
       })
       if (res.ok) {
         const data = await res.json()
-        localStorage.setItem('token', data.access_token)
+        
         if (remember) {
-          localStorage.setItem('rememberLogin', login)
+          localStorage.setItem('rememberLogin', telegramUsername)
           localStorage.setItem('rememberPass', password)
         } else {
           localStorage.removeItem('rememberLogin')
           localStorage.removeItem('rememberPass')
         }
+        
         const me = await fetch(`${API_URL}/users/me`, {
           headers: { Authorization: `Bearer ${data.access_token}` },
         })
         if (me.ok) {
           const info = await me.json()
+          console.log('DEBUG Login: User info from API:', info)
+          console.log('DEBUG Login: Role from API:', info.role, typeof info.role)
+          
+          // Сохраняем всё одновременно чтобы избежать race condition
+          localStorage.setItem('token', data.access_token)
           localStorage.setItem('role', info.role)
           localStorage.setItem('userId', String(info.id))
+          
+          console.log('DEBUG Login: Saved to localStorage:', {
+            token: localStorage.getItem('token') ? 'exists' : 'missing',
+            role: localStorage.getItem('role'),
+            userId: localStorage.getItem('userId')
+          })
+          
+          // Принудительно обновляем страницу чтобы App.tsx перечитал localStorage
+          window.location.href = '/smm-projects'
+        } else {
+          console.error('DEBUG Login: Failed to get user info:', me.status, me.statusText)
+          navigate('/smm-projects') // Fallback если не удалось получить информацию о пользователе
         }
-        navigate('/tasks')
       } else {
         setError('Invalid credentials')
       }
@@ -81,18 +98,24 @@ function Login() {
             
             <div className="space-y-4">
               <div>
-                <label htmlFor="login" className="block text-sm font-medium text-gray-300 mb-2">
-                  Логин
+                <label htmlFor="telegramUsername" className="block text-sm font-medium text-gray-300 mb-2">
+                  Telegram Username
                 </label>
-                <input
-                  id="login"
-                  type="text"
-                  required
-                  className="w-full px-4 py-3 bg-gray-700/50 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
-                  placeholder="Введите логин"
-                  value={login}
-                  onChange={(e) => setLogin(e.target.value)}
-                />
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400">@</span>
+                  <input
+                    id="telegramUsername"
+                    type="text"
+                    required
+                    className="w-full pl-8 pr-4 py-3 bg-gray-700/50 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
+                    placeholder="pullerize"
+                    value={telegramUsername}
+                    onChange={(e) => setTelegramUsername(e.target.value.replace('@', ''))}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-gray-400">
+                  Введите ваш Telegram username без символа @
+                </p>
               </div>
               
               <div>

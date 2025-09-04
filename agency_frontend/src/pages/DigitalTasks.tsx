@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { API_URL } from '../api';
 import DigitalProject from './DigitalProject';
+import { formatDateTimeUTC5 } from '../utils/dateUtils';
+import { usePersistedState } from '../utils/filterStorage';
 
 interface ProjectOption { id: number; name: string }
 interface Service { id: number; name: string }
@@ -59,12 +61,12 @@ function DigitalList() {
   const [deadlineTime, setDeadlineTime] = useState('');
   const [monthly, setMonthly] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
-  const [filterProj, setFilterProj] = useState('');
-  const [filterService, setFilterService] = useState('');
-  const [filterExec, setFilterExec] = useState('');
-  const [filterDate, setFilterDate] = useState('all');
-  const [customDate, setCustomDate] = useState('');
-  const [filterStatus, setFilterStatus] = useState('');
+  const [filterProj, setFilterProj] = usePersistedState('filter_digital_project', '');
+  const [filterService, setFilterService] = usePersistedState('filter_digital_service', '');
+  const [filterExec, setFilterExec] = usePersistedState('filter_digital_executor', '');
+  const [filterDate, setFilterDate] = usePersistedState('filter_digital_date', 'all');
+  const [customDate, setCustomDate] = usePersistedState('filter_digital_custom_date', '');
+  const [filterStatus, setFilterStatus] = usePersistedState('filter_digital_status', '');
   const [timezone, setTimezone] = useState('Asia/Tashkent');
   const navigate = useNavigate();
 
@@ -374,7 +376,7 @@ function DigitalList() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="text-sm text-gray-900">
-                        {new Date(it.created_at.endsWith('Z') ? it.created_at : it.created_at + 'Z').toLocaleString('ru-RU', { timeZone: timezone })}
+                        {formatDateTimeUTC5(it.created_at)}
                       </div>
                     </td>
                     <td className="px-6 py-4">

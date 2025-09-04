@@ -1,18 +1,22 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../api'
+import { formatDateUTC5 } from '../utils/dateUtils'
 
 interface User {
   id: number
-  login: string
+  telegram_username: string
+  telegram_id?: number
   name: string
   role: string
+  telegram_registered_at?: string
+  is_active: boolean
 }
 
 function Users() {
   const [users, setUsers] = useState<User[]>([])
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<User | null>(null)
-  const [login, setLogin] = useState('')
+  const [telegramUsername, setTelegramUsername] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('designer')
@@ -33,7 +37,7 @@ function Users() {
 
   const openAdd = () => {
     setEditing(null)
-    setLogin('')
+    setTelegramUsername('')
     setName('')
     setPassword('')
     setRole('designer')
@@ -42,10 +46,10 @@ function Users() {
 
   const openEdit = (u: User) => {
     // Don't allow editing inactive users
-    if (u.role === 'inactive') return
+    if (u.role === 'inactive' || !u.is_active) return
     
     setEditing(u)
-    setLogin(u.login)
+    setTelegramUsername(u.telegram_username)
     setName(u.name)
     setPassword('')
     setRole(u.role)
@@ -53,7 +57,7 @@ function Users() {
   }
 
   const save = async () => {
-    const payload: any = { login, name, role }
+    const payload: any = { telegram_username: telegramUsername, name, role }
     if (password) payload.password = password
     if (editing) {
       await fetch(`${API_URL}/users/${editing.id}`, {
@@ -109,8 +113,8 @@ function Users() {
   }
 
   const groupUsersByRole = (users: User[]) => {
-    const activeUsers = users.filter(u => u.role !== 'inactive')
-    const inactiveUsers = users.filter(u => u.role === 'inactive')
+    const activeUsers = users.filter(u => u.role !== 'inactive' && u.is_active)
+    const inactiveUsers = users.filter(u => u.role === 'inactive' || !u.is_active)
     
     const grouped: { [key: string]: User[] } = {}
     activeUsers.forEach(user => {
@@ -160,8 +164,15 @@ function Users() {
                             <div className="flex items-center gap-3">
                               <span className="font-medium text-lg">{u.name}</span>
                             </div>
-                            <div className="text-sm text-gray-500 mt-1">
-                              Логин: {u.login}
+                            <div className="text-sm text-gray-500 mt-1 space-y-1">
+                              <div>📱 @{u.telegram_username}</div>
+                              {u.telegram_id && <div>🆔 ID: {u.telegram_id}</div>}
+                              {u.telegram_registered_at && (
+                                <div>✅ Зарегистрирован в Telegram: {formatDateUTC5(u.telegram_registered_at)}</div>
+                              )}
+                              {!u.telegram_registered_at && (
+                                <div className="text-yellow-600">⚠️ Не подключен к Telegram</div>
+                              )}
                             </div>
                           </div>
                           
@@ -210,7 +221,7 @@ function Users() {
                             </span>
                           </div>
                           <div className="text-sm text-gray-400 mt-1">
-                            Логин: {u.login}
+                            📱 @{u.telegram_username}
                           </div>
                         </div>
                         
@@ -247,12 +258,19 @@ function Users() {
             
             <div className="space-y-3">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Логин</label>
-                <input 
-                  className="border p-2 w-full rounded" 
-                  value={login} 
-                  onChange={e => setLogin(e.target.value)} 
-                />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Telegram Username</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">@</span>
+                  <input 
+                    className="border p-2 pl-8 w-full rounded" 
+                    value={telegramUsername} 
+                    onChange={e => setTelegramUsername(e.target.value.replace('@', ''))} 
+                    placeholder="pullerize"
+                  />
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Введите Telegram username без символа @
+                </p>
               </div>
               
               <div>

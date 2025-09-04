@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../api'
+import { formatDateTimeUTC5, formatDeadlineUTC5 } from '../utils/dateUtils'
 
 interface User {
   id: number
@@ -58,15 +59,7 @@ function lastDay(dt: Date) {
 
 function formatDateTime(d?: string | null) {
   if (!d) return ''
-  const date = new Date(d)
-  return date.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: 'Asia/Tashkent',
-  })
+  return formatDateTimeUTC5(d)
 }
 
 function timeLeft(d: string) {
@@ -86,7 +79,7 @@ function timeLeft(d: string) {
 
 function renderDeadline(t: Task) {
   if (!t.deadline) return ''
-  const formatted = formatDateTime(t.deadline)
+  const formatted = formatDeadlineUTC5(t.deadline) // Используем formatDeadlineUTC5 для дедлайнов
   if (t.status !== 'done') {
     return `${formatted} (${timeLeft(t.deadline)})`
   }

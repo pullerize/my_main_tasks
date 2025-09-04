@@ -11,17 +11,19 @@ def get_user(db: Session, user_id: int) -> Optional[models.User]:
 
 
 def get_user_by_login(db: Session, login: str) -> Optional[models.User]:
-    return db.query(models.User).filter(models.User.login == login).first()
+    # Now using telegram_username instead of login
+    return db.query(models.User).filter(models.User.telegram_username == login).first()
 
 
 def create_user(db: Session, user: schemas.UserCreate) -> models.User:
     hashed_password = auth.get_password_hash(user.password)
     db_user = models.User(
-        login=user.login,
+        telegram_username=user.telegram_username,
         name=user.name,
         hashed_password=hashed_password,
         role=user.role,
         birth_date=user.birth_date,
+        is_active=True,
     )
     db.add(db_user)
     db.commit()
@@ -37,8 +39,8 @@ def update_user(db: Session, user_id: int, user: schemas.UserUpdate) -> Optional
     db_user = get_user(db, user_id)
     if not db_user:
         return None
-    if user.login is not None:
-        db_user.login = user.login
+    if user.telegram_username is not None:
+        db_user.telegram_username = user.telegram_username
     if user.name is not None:
         db_user.name = user.name
     if user.password is not None:
@@ -374,7 +376,7 @@ def create_expense(
         project_id=project_id,
         name=exp.name,
         amount=exp.amount,
-        comment=exp.comment,
+        description=exp.comment,
         created_at=created,
     )
     db.add(e)
@@ -622,40 +624,88 @@ def delete_project_post(db: Session, post_id: int) -> None:
         db.commit()
 
 
-def get_expense_items(db: Session, is_common: bool | None = None) -> List[models.ExpenseItem]:
-    q = db.query(models.ExpenseItem)
-    if is_common is not None:
-        q = q.filter(models.ExpenseItem.is_common == is_common)
+def get_expense_categories(db: Session, active_only: bool = False) -> List[models.ExpenseCategory]:
+    q = db.query(models.ExpenseCategory)
+    if active_only:
+        q = q.filter(models.ExpenseCategory.is_active == True)
     return q.all()
 
 
-def create_expense_item(db: Session, name: str, is_common: bool = False, unit_cost: int = 0) -> models.ExpenseItem:
-    item = models.ExpenseItem(name=name, is_common=is_common, unit_cost=unit_cost)
-    db.add(item)
+def create_expense_category(db: Session, name: str, description: str = None, is_active: bool = True) -> models.ExpenseCategory:
+    category = models.ExpenseCategory(name=name, description=description, is_active=is_active)
+    db.add(category)
     db.commit()
-    db.refresh(item)
-    return item
+    db.refresh(category)
+    return category
 
 
-def update_expense_item(db: Session, item_id: int, name: str, is_common: bool | None = None, unit_cost: int | None = None) -> Optional[models.ExpenseItem]:
-    item = db.query(models.ExpenseItem).filter(models.ExpenseItem.id == item_id).first()
-    if not item:
+def update_expense_category(db: Session, category_id: int, name: str = None, description: str = None, is_active: bool = None) -> Optional[models.ExpenseCategory]:
+    category = db.query(models.ExpenseCategory).filter(models.ExpenseCategory.id == category_id).first()
+    if not category:
         return None
-    item.name = name
-    if is_common is not None:
-        item.is_common = is_common
-    if unit_cost is not None:
-        item.unit_cost = unit_cost
+    if name is not None:
+        category.name = name
+    if description is not None:
+        category.description = description
+    if is_active is not None:
+        category.is_active = is_active
     db.commit()
-    db.refresh(item)
-    return item
+    db.refresh(category)
+    return category
 
 
-def delete_expense_item(db: Session, item_id: int) -> None:
-    item = db.query(models.ExpenseItem).filter(models.ExpenseItem.id == item_id).first()
-    if item:
-        db.delete(item)
-        db.commit()
+def delete_expense_category(db: Session, category_id: int) -> bool:
+    category = db.query(models.ExpenseCategory).filter(models.ExpenseCategory.id == category_id).first()
+    if not category:
+        return False
+    db.delete(category)
+    db.commit()
+    return True
+
+
+# Common Expenses CRUD
+def get_common_expenses(db: Session, skip: int = 0, limit: int = 100, 
+                       start_date=None, end_date=None, category_id: int = None) -> List[models.CommonExpense]:
+    query = db.query(models.CommonExpense)
+    
+    if start_date:
+        query = query.filter(models.CommonExpense.date >= start_date)
+    if end_date:
+        query = query.filter(models.CommonExpense.date <= end_date)
+    if category_id:
+        query = query.filter(models.CommonExpense.category_id == category_id)
+    
+    return query.order_by(models.CommonExpense.date.desc()).offset(skip).limit(limit).all()
+
+
+def create_common_expense(db: Session, expense_data: dict, created_by: int = None) -> models.CommonExpense:
+    expense = models.CommonExpense(**expense_data, created_by=created_by)
+    db.add(expense)
+    db.commit()
+    db.refresh(expense)
+    return expense
+
+
+def update_common_expense(db: Session, expense_id: int, update_data: dict) -> Optional[models.CommonExpense]:
+    expense = db.query(models.CommonExpense).filter(models.CommonExpense.id == expense_id).first()
+    if not expense:
+        return None
+    
+    for field, value in update_data.items():
+        setattr(expense, field, value)
+    
+    db.commit()
+    db.refresh(expense)
+    return expense
+
+
+def delete_common_expense(db: Session, expense_id: int) -> bool:
+    expense = db.query(models.CommonExpense).filter(models.CommonExpense.id == expense_id).first()
+    if not expense:
+        return False
+    db.delete(expense)
+    db.commit()
+    return True
 
 
 def get_taxes(db: Session) -> List[models.Tax]:
@@ -1040,3 +1090,166 @@ def increment_file_download_count(db: Session, file_id: int) -> None:
     if resource_file:
         resource_file.download_count += 1
         db.commit()
+
+
+# User Statistics Functions
+from datetime import datetime, timedelta
+from sqlalchemy import func, distinct, case, and_
+
+
+def get_user_statistics(db: Session, user_id: int) -> Optional[schemas.UserStats]:
+    """Получить статистику пользователя"""
+    user = get_user(db, user_id)
+    if not user:
+        return None
+    
+    # Общее количество задач пользователя
+    total_tasks_query = db.query(models.Task).filter(models.Task.executor_id == user_id)
+    total_assigned_tasks = total_tasks_query.count()
+    
+    # Выполненные задачи
+    completed_tasks = total_tasks_query.filter(models.Task.status == models.TaskStatus.done).count()
+    
+    # Незавершенные задачи
+    pending_tasks = total_tasks_query.filter(models.Task.status == models.TaskStatus.in_progress).count()
+    
+    # Процент выполнения
+    completion_rate = (completed_tasks / total_assigned_tasks * 100) if total_assigned_tasks > 0 else 0
+    
+    # Проекты где пользователь выполнил хотя бы 1 задачу
+    projects_with_completed_tasks = db.query(distinct(models.Task.project)).filter(
+        and_(
+            models.Task.executor_id == user_id,
+            models.Task.status == models.TaskStatus.done,
+            models.Task.project.isnot(None)
+        )
+    ).count()
+    
+    # Задачи за текущий месяц
+    now = datetime.utcnow()
+    month_start = datetime(now.year, now.month, 1)
+    month_end = datetime(now.year, now.month + 1, 1) if now.month < 12 else datetime(now.year + 1, 1, 1)
+    
+    this_month_tasks = total_tasks_query.filter(
+        models.Task.created_at >= month_start,
+        models.Task.created_at < month_end
+    ).count()
+    
+    this_month_completions = total_tasks_query.filter(
+        models.Task.created_at >= month_start,
+        models.Task.created_at < month_end,
+        models.Task.status == models.TaskStatus.done
+    ).count()
+    
+    # Активность за текущую неделю (понедельник - воскресенье)
+    today = datetime.now().date()
+    # Найти понедельник текущей недели
+    days_since_monday = today.weekday()
+    monday = today - timedelta(days=days_since_monday)
+    
+    weekly_activity = []
+    day_names = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+    
+    for i in range(7):
+        day = monday + timedelta(days=i)
+        day_start = datetime.combine(day, datetime.min.time())
+        day_end = datetime.combine(day, datetime.max.time())
+        
+        # Задачи поставленные в этот день
+        assigned_count = total_tasks_query.filter(
+            models.Task.created_at >= day_start,
+            models.Task.created_at <= day_end
+        ).count()
+        
+        # Задачи завершенные в этот день
+        completed_count = total_tasks_query.filter(
+            models.Task.finished_at >= day_start,
+            models.Task.finished_at <= day_end,
+            models.Task.status == models.TaskStatus.done
+        ).count()
+        
+        weekly_activity.append(schemas.WeeklyActivity(
+            day=day_names[i],
+            completed_tasks=completed_count,
+            assigned_tasks=assigned_count
+        ))
+    
+    # Последние выполненные задачи
+    recent_tasks_query = total_tasks_query.filter(
+        models.Task.status == models.TaskStatus.done
+    ).order_by(models.Task.finished_at.desc()).limit(5)
+    
+    recent_tasks = []
+    for task in recent_tasks_query:
+        time_diff = datetime.utcnow() - (task.finished_at or task.created_at)
+        if time_diff.days == 0:
+            if time_diff.seconds < 3600:
+                time_str = f"{time_diff.seconds // 60} минут назад"
+            else:
+                time_str = f"{time_diff.seconds // 3600} часов назад"
+        elif time_diff.days == 1:
+            time_str = "1 день назад"
+        else:
+            time_str = f"{time_diff.days} дней назад"
+        
+        recent_tasks.append(schemas.RecentTask(
+            title=task.title,
+            project=task.project or "Без проекта",
+            completed_at=time_str,
+            status=task.status
+        ))
+    
+    # Продуктивность
+    # Среднее количество задач в день за последние 30 дней
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    tasks_last_30_days = total_tasks_query.filter(
+        models.Task.finished_at >= thirty_days_ago,
+        models.Task.status == models.TaskStatus.done
+    ).count()
+    average_tasks_per_day = tasks_last_30_days / 30.0
+    
+    # Лучшая серия - максимальное количество задач завершенное за один день
+    best_day_query = db.query(func.date(models.Task.finished_at), func.count(models.Task.id)).filter(
+        models.Task.executor_id == user_id,
+        models.Task.status == models.TaskStatus.done,
+        models.Task.finished_at.isnot(None)
+    ).group_by(func.date(models.Task.finished_at)).order_by(func.count(models.Task.id).desc()).first()
+    
+    best_streak = best_day_query[1] if best_day_query else 0
+    
+    # Задачи завершенные сегодня
+    today_start = datetime.combine(today, datetime.min.time())
+    today_end = datetime.combine(today, datetime.max.time())
+    current_day_tasks = total_tasks_query.filter(
+        models.Task.finished_at >= today_start,
+        models.Task.finished_at <= today_end,
+        models.Task.status == models.TaskStatus.done
+    ).count()
+    
+    # Подсчет активных дней (дни когда пользователь завершал задачи)
+    # Это приблизительная метрика - в будущем можно добавить отдельную таблицу для отслеживания активности
+    active_days_count = db.query(func.count(distinct(func.date(models.Task.finished_at)))).filter(
+        models.Task.executor_id == user_id,
+        models.Task.status == models.TaskStatus.done,
+        models.Task.finished_at.isnot(None)
+    ).scalar() or 0
+    
+    productivity = schemas.ProductivityMetrics(
+        average_tasks_per_day=round(average_tasks_per_day, 1),
+        best_streak=best_streak,
+        current_day_tasks=current_day_tasks
+    )
+    
+    return schemas.UserStats(
+        total_projects=projects_with_completed_tasks,
+        completed_tasks=completed_tasks,
+        active_days=active_days_count,
+        total_assigned_tasks=total_assigned_tasks,
+        pending_tasks=pending_tasks,
+        completion_rate=round(completion_rate, 1),
+        this_month_tasks=this_month_tasks,
+        this_month_completions=this_month_completions,
+        weekly_activity=weekly_activity,
+        recent_tasks=recent_tasks,
+        productivity=productivity
+    )

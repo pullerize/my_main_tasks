@@ -2,6 +2,22 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    # First try to load from parent directory (shared config)
+    parent_env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+    if os.path.exists(parent_env_path):
+        load_dotenv(parent_env_path)
+        print(f"✅ Loaded shared config from: {parent_env_path}")
+    else:
+        # Fallback to local .env file
+        load_dotenv()
+        print("✅ Loaded local config")
+except ImportError:
+    # dotenv не установлен, используем обычные переменные окружения
+    print("⚠️  python-dotenv not installed, using environment variables")
+
 def get_database_url():
     """Динамически формируем DATABASE_URL на основе DB_ENGINE"""
     db_engine = os.getenv("DB_ENGINE", "sqlite")

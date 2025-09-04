@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { API_URL } from '../api';
+import { getCurrentTimeUTC5, getCurrentDateUTC5 } from '../utils/dateUtils';
 
 interface Tax {
   id: number;
@@ -165,7 +166,7 @@ export default function DigitalFinance() {
     console.log('Component mounted with date range:', { 
       from: dateFromFilter, 
       to: dateToFilter,
-      currentDate: new Date().toISOString()
+      currentDate: getCurrentTimeUTC5()
     });
     
     load();
@@ -286,7 +287,7 @@ export default function DigitalFinance() {
         body: JSON.stringify({
           description: newExpense.description.trim(),
           amount: baseAmount,
-          date: new Date().toISOString().split('T')[0]
+          date: getCurrentDateUTC5()
         }),
       });
 

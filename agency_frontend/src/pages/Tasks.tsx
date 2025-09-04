@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../api'
+import { formatDateShortUTC5, getCurrentTimeUTC5 } from '../utils/dateUtils'
+import { usePersistedState } from '../utils/filterStorage'
 
 interface Task {
   id: number
@@ -37,6 +39,19 @@ const MANAGER_TYPES = [
   'Анализ',
   'Брифинг',
   'Сценарий',
+  'Другое',
+]
+const DIGITAL_TYPES = [
+  'Настройка рекламы',
+  'Анализ эффективности',
+  'A/B тестирование', 
+  'Настройка аналитики',
+  'Оптимизация конверсий',
+  'Email-маркетинг',
+  'Контекстная реклама',
+  'Таргетированная реклама',
+  'SEO оптимизация',
+  'Веб-аналитика',
   'Другое',
 ]
 const ADMIN_TYPES = [
@@ -87,6 +102,16 @@ const TYPE_ICONS: Record<string, string> = {
   'Администраторские задачи': '🛠️',
   'Собеседование': '🧑‍💼',
   'Договор': '✍️',
+  'Настройка рекламы': '🎯',
+  'Анализ эффективности': '📈',
+  'A/B тестирование': '🧪',
+  'Настройка аналитики': '📊',
+  'Оптимизация конверсий': '💰',
+  'Email-маркетинг': '📧',
+  'Контекстная реклама': '🔍',
+  'Таргетированная реклама': '🎯',
+  'SEO оптимизация': '🔍',
+  'Веб-аналитика': '📊',
 }
 
 const FORMAT_ICONS: Record<string, string> = {
@@ -99,15 +124,7 @@ const FORMAT_ICONS: Record<string, string> = {
 
 const formatDate = (iso?: string) => {
   if (!iso) return ''
-  const normalized = /Z|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z'
-  const d = new Date(normalized)
-  return d.toLocaleString('ru-RU', {
-    timeZone: 'Asia/Tashkent',
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatDateShortUTC5(iso)
 }
 
 const timeLeft = (iso?: string) => {
@@ -208,31 +225,67 @@ function Tasks() {
   const [users, setUsers] = useState<User[]>([])
   const [projects, setProjects] = useState<{id: number; name: string}[]>([])
 
-  const [filterRole, setFilterRole] = useState('')
-  const [filterUser, setFilterUser] = useState('')
-  const [filterDate, setFilterDate] = useState('all')
-  const [customDate, setCustomDate] = useState('')
-  const [filterStatus, setFilterStatus] = useState('active')
-  const [filterProject, setFilterProject] = useState('')
+  const [filterRole, setFilterRole] = usePersistedState('filter_tasks_role', '')
+  // Временная замена usePersistedState для отладки
+  const [filterUser, setFilterUser] = useState(() => {
+    try {
+      const stored = localStorage.getItem('filter_tasks_user')
+      if (stored !== null) {
+        const parsed = JSON.parse(stored)
+        console.log('Initial filterUser from localStorage:', parsed)
+        return parsed
+      }
+    } catch (e) {
+      console.warn('Error parsing filterUser from localStorage:', e)
+    }
+    // Устанавливаем текущего пользователя по умолчанию только при первом запуске
+    const userId = Number(localStorage.getItem('userId'))
+    return userId ? String(userId) : ''
+  })
+  
+  const [hasInitialized, setHasInitialized] = useState(false)
+  const [filterDate, setFilterDate] = usePersistedState('filter_tasks_date', 'all')
+  const [customDate, setCustomDate] = usePersistedState('filter_tasks_custom_date', '')
+  const [filterStatus, setFilterStatus] = usePersistedState('filter_tasks_status', 'active')
+  const [filterProject, setFilterProject] = usePersistedState('filter_tasks_project', '')
 
   const role = localStorage.getItem('role') || ''
   const userId = Number(localStorage.getItem('userId'))
 
+  // Сохраняем filterUser в localStorage при изменении
   useEffect(() => {
-    setFilterUser(String(userId))
-  }, [userId])
+    console.log('Saving filterUser to localStorage:', filterUser)
+    localStorage.setItem('filter_tasks_user', JSON.stringify(filterUser))
+  }, [filterUser])
+
+  useEffect(() => {
+    // Устанавливаем текущего пользователя только при первом заходе, если в localStorage нет сохраненного значения
+    if (!hasInitialized && userId) {
+      const stored = localStorage.getItem('filter_tasks_user')
+      console.log('Initialization check:', { stored, filterUser, userId })
+      
+      // Если в localStorage нет значения, устанавливаем текущего пользователя
+      if (stored === null) {
+        console.log('No stored filter, setting default user filter to:', String(userId))
+        setFilterUser(String(userId))
+      }
+      setHasInitialized(true)
+    }
+  }, [userId, hasInitialized])
 
   const allowedUsers = Array.isArray(users) ? users.filter((u) => {
     if (role === 'admin') return true
     if (role === 'designer') return u.role === 'designer'
+    if (role === 'digital') return u.role === 'digital'
     if (role === 'smm_manager')
-      return u.role === 'designer' || u.role === 'smm_manager'
+      return u.role === 'designer' || u.role === 'smm_manager' || u.role === 'digital'
     return false
   }) : []
 
   const allowedRoles = () => {
-    if (role === 'admin') return ['designer', 'smm_manager', 'admin']
-    if (role === 'smm_manager') return ['designer', 'smm_manager']
+    if (role === 'admin') return ['designer', 'smm_manager', 'digital', 'admin']
+    if (role === 'smm_manager') return ['designer', 'smm_manager', 'digital']
+    if (role === 'digital') return ['digital']
     if (role === 'designer') return ['designer']
     return []
   }
@@ -301,10 +354,12 @@ function Tasks() {
     
     const execRole = users.find((u) => u.id === t.executor_id)?.role
     if (role === 'designer' && execRole !== 'designer') return false
+    if (role === 'digital' && execRole !== 'digital') return false
     if (
       role === 'smm_manager' &&
       execRole !== 'designer' &&
-      execRole !== 'smm_manager'
+      execRole !== 'smm_manager' &&
+      execRole !== 'digital'
     )
       return false
     if (filterStatus !== 'all') {
@@ -351,9 +406,9 @@ function Tasks() {
     const execRole = executorId && Array.isArray(users) ? users.find(u => u.id === Number(executorId))?.role : role
     if (execRole === 'designer') {
       if (!deadlineDate || !deadlineTime) return true
-      const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tashkent' }))
+      const now = new Date()
       if (now.getHours() >= 17) {
-        const dl = new Date(new Date(`${deadlineDate}T${deadlineTime}`).toLocaleString('en-US', { timeZone: 'Asia/Tashkent' }))
+        const dl = new Date(`${deadlineDate}T${deadlineTime}`)
         const next = new Date(now)
         next.setDate(now.getDate() + 1)
         next.setHours(9,0,0,0)
@@ -373,7 +428,7 @@ function Tasks() {
       deadlineStr = `${deadlineDate}T${deadlineTime}`
     } else if (!deadlineDate && deadlineTime.length === 5) {
       const now = new Date(
-        new Date().toLocaleString('en-US', { timeZone: 'Asia/Tashkent' })
+        getCurrentTimeUTC5()
       )
       const [hh, mm] = deadlineTime.split(':').map(Number)
       const dl = new Date(now)
@@ -437,7 +492,7 @@ function Tasks() {
       deadlineStr = `${deadlineDate}T${deadlineTime}`
     } else if (!deadlineDate && deadlineTime.length === 5) {
       const now = new Date(
-        new Date().toLocaleString('en-US', { timeZone: 'Asia/Tashkent' })
+        getCurrentTimeUTC5()
       )
       const [hh, mm] = deadlineTime.split(':').map(Number)
       const dl = new Date(now)
@@ -526,7 +581,13 @@ function Tasks() {
               setTaskType('')
               setTaskFormat('')
               setExecutorId('')
-              setExecutorRole('')
+              // Автоматически устанавливаем роль если доступна только одна
+              const availableRoles = allowedRoles()
+              if (availableRoles.length === 1) {
+                setExecutorRole(availableRoles[0])
+              } else {
+                setExecutorRole('')
+              }
               setHighPriority(false)
               setDeadlineDate('')
               setDeadlineTime('')
@@ -560,6 +621,7 @@ function Tasks() {
                 <option value="">Все роли</option>
                 <option value="designer">{ROLE_NAMES.designer}</option>
                 <option value="smm_manager">{ROLE_NAMES.smm_manager}</option>
+                <option value="digital">{ROLE_NAMES.digital}</option>
                 {role === 'admin' && (
                   <option value="admin">{ROLE_NAMES.admin}</option>
                 )}
@@ -568,7 +630,11 @@ function Tasks() {
             <select
               className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
               value={filterUser}
-              onChange={(e) => setFilterUser(e.target.value)}
+              onChange={(e) => {
+                const newValue = e.target.value
+                console.log('onChange: Changing filterUser from', filterUser, 'to', newValue, 'type:', typeof newValue)
+                setFilterUser(newValue)
+              }}
             >
               <option value="">Все сотрудники</option>
               {Array.isArray(users) && users
@@ -807,59 +873,65 @@ function Tasks() {
             <h2 className="text-xl mb-2">
               {isEditing ? (selectedTask ? 'Редактировать задачу' : 'Новая задача') : 'Информация о задаче'}
             </h2>
-            <input
-              className="border p-2 w-full mb-2"
-              placeholder="Заголовок"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              disabled={!isEditing}
-            />
-            <textarea
-              className="border p-2 w-full mb-2"
-              placeholder="Описание"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              disabled={!isEditing}
-            />
-            {isEditing ? (
+            
+            {/* При создании новой задачи сначала выбираем роль, исполнителя и проект, а затем название */}
+            {isEditing && !selectedTask ? (
               <>
-                <select
-                  className="border p-2 w-full mb-2"
-                  value={executorRole}
-                  onChange={(e) => {
-                    setExecutorRole(e.target.value)
-                    setExecutorId('')
-                  }}
-                >
-                  <option value="">Выберите роль</option>
-                  {allowedRoles().map((r) => (
-                    <option key={r} value={r}>
-                      {ROLE_NAMES[r]}
+                {/* Выбор роли исполнителя (показываем только если доступно больше одной роли или для дизайнеров) */}
+                {(allowedRoles().length > 1 || role === 'designer') && (
+                  <select
+                    className="border p-2 w-full mb-2"
+                    value={executorRole}
+                    onChange={(e) => {
+                      setExecutorRole(e.target.value)
+                      setExecutorId('')
+                    }}
+                  >
+                    <option value="">
+                      {allowedRoles().length === 1 ? 
+                        `Роль исполнителя: ${ROLE_NAMES[allowedRoles()[0]]}` : 
+                        'Выберите роль исполнителя'
+                      }
                     </option>
-                  ))}
-                </select>
+                    {allowedRoles().map((r) => (
+                      <option key={r} value={r}>
+                        {ROLE_NAMES[r]}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                
+                {/* Выбор конкретного исполнителя */}
                 <select
                   className="border p-2 w-full mb-2"
                   value={executorId}
                   onChange={(e) => setExecutorId(e.target.value)}
-                  disabled={!executorRole}
+                  disabled={allowedRoles().length > 1 && !executorRole}
                 >
                   <option value="" disabled>
-                    Выберите исполнителя
+                    {allowedRoles().length > 1 && !executorRole ? 
+                      'Сначала выберите роль исполнителя' : 
+                      'Выберите исполнителя'
+                    }
                   </option>
                   {allowedUsers
-                    .filter((u) => (executorRole ? u.role === executorRole : true))
+                    .filter((u) => {
+                      // Если выбрана роль, фильтруем по ней
+                      if (executorRole) return u.role === executorRole
+                      // Если роль одна, показываем пользователей этой роли
+                      if (allowedRoles().length === 1) return u.role === allowedRoles()[0]
+                      // Иначе показываем всех доступных пользователей
+                      return true
+                    })
                     .map((u) => (
                       <option key={u.id} value={u.id}>
-                        {u.name}
+                        {u.name} ({ROLE_NAMES[u.role]})
                       </option>
                     ))}
                 </select>
-              </>
-            ) : null}
-            {(executorId || role === 'designer') && (
-              isEditing ? (
-                <>
+                
+                {/* Выбор проекта (показывается после выбора исполнителя) */}
+                {executorId && (
                   <select
                     className="border p-2 w-full mb-2"
                     value={project}
@@ -870,6 +942,10 @@ function Tasks() {
                       <option key={p.id} value={p.name}>{p.name}</option>
                     ))}
                   </select>
+                )}
+                
+                {/* Выбор типа задачи (показывается после выбора проекта или если проект не обязателен) */}
+                {executorId && (
                   <select
                     className="border p-2 w-full mb-2"
                     value={taskType}
@@ -879,6 +955,8 @@ function Tasks() {
                     {(
                       (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'designer'
                         ? DESIGNER_TYPES
+                        : (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'digital'
+                        ? DIGITAL_TYPES
                         : (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'admin'
                         ? ADMIN_TYPES
                         : MANAGER_TYPES
@@ -888,22 +966,166 @@ function Tasks() {
                       </option>
                     ))}
                   </select>
-                  {(Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'designer' && (
+                )}
+                
+                {/* Выбор формата (только для дизайнеров) */}
+                {executorId && (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'designer' && (
+                  <select
+                    className="border p-2 w-full mb-2"
+                    value={taskFormat}
+                    onChange={(e) => setTaskFormat(e.target.value)}
+                  >
+                    <option value="">Формат не выбран</option>
+                    {DESIGNER_FORMATS.map((f) => (
+                      <option key={f} value={f}>
+                        {FORMAT_ICONS[f]} {f}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                
+                {/* Название и описание задачи (показывается только после выбора всех обязательных полей) */}
+                {executorId && (
+                  <>
+                    <input
+                      className="border p-2 w-full mb-2"
+                      placeholder="Заголовок"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                    />
+                    <textarea
+                      className="border p-2 w-full mb-2"
+                      placeholder="Описание"
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                    />
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                {/* При редактировании задачи показываем все поля сразу */}
+                <input
+                  className="border p-2 w-full mb-2"
+                  placeholder="Заголовок"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  disabled={!isEditing}
+                />
+                <textarea
+                  className="border p-2 w-full mb-2"
+                  placeholder="Описание"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  disabled={!isEditing}
+                />
+                {isEditing && allowedRoles().length > 0 ? (
+                  <>
+                    {/* Выбор роли исполнителя (показываем только если доступно больше одной роли или для дизайнеров) */}
+                    {(allowedRoles().length > 1 || role === 'designer') && (
+                      <select
+                        className="border p-2 w-full mb-2"
+                        value={executorRole}
+                        onChange={(e) => {
+                          setExecutorRole(e.target.value)
+                          setExecutorId('')
+                        }}
+                      >
+                        <option value="">
+                          {allowedRoles().length === 1 ? 
+                            `Роль исполнителя: ${ROLE_NAMES[allowedRoles()[0]]}` : 
+                            'Выберите роль исполнителя'
+                          }
+                        </option>
+                        {allowedRoles().map((r) => (
+                          <option key={r} value={r}>
+                            {ROLE_NAMES[r]}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    
+                    {/* Выбор конкретного исполнителя */}
                     <select
                       className="border p-2 w-full mb-2"
-                      value={taskFormat}
-                      onChange={(e) => setTaskFormat(e.target.value)}
+                      value={executorId}
+                      onChange={(e) => setExecutorId(e.target.value)}
+                      disabled={allowedRoles().length > 1 && !executorRole}
                     >
-                      <option value="">Формат не выбран</option>
-                      {DESIGNER_FORMATS.map((f) => (
-                        <option key={f} value={f}>
-                          {FORMAT_ICONS[f]} {f}
-                        </option>
-                      ))}
+                      <option value="" disabled>
+                        {allowedRoles().length > 1 && !executorRole ? 
+                          'Сначала выберите роль исполнителя' : 
+                          'Выберите исполнителя'
+                        }
+                      </option>
+                      {allowedUsers
+                        .filter((u) => {
+                          // Если выбрана роль, фильтруем по ней
+                          if (executorRole) return u.role === executorRole
+                          // Если роль одна, показываем пользователей этой роли
+                          if (allowedRoles().length === 1) return u.role === allowedRoles()[0]
+                          // Иначе показываем всех доступных пользователей
+                          return true
+                        })
+                        .map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name} ({ROLE_NAMES[u.role]})
+                          </option>
+                        ))}
                     </select>
-                  )}
-                </>
-              ) : (
+                  </>
+                ) : null}
+                {executorId && isEditing ? (
+                    <>
+                      <select
+                        className="border p-2 w-full mb-2"
+                        value={project}
+                        onChange={(e) => setProject(e.target.value)}
+                      >
+                        <option value="">Проект не выбран</option>
+                        {Array.isArray(projects) && projects.map(p => (
+                          <option key={p.id} value={p.name}>{p.name}</option>
+                        ))}
+                      </select>
+                      <select
+                        className="border p-2 w-full mb-2"
+                        value={taskType}
+                        onChange={(e) => setTaskType(e.target.value)}
+                      >
+                        <option value="">Тип задачи не выбран</option>
+                        {(
+                          (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'designer'
+                            ? DESIGNER_TYPES
+                            : (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'digital'
+                            ? DIGITAL_TYPES
+                            : (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'admin'
+                            ? ADMIN_TYPES
+                            : MANAGER_TYPES
+                        ).map((t) => (
+                          <option key={t} value={t}>
+                            {TYPE_ICONS[t]} {t}
+                          </option>
+                        ))}
+                      </select>
+                      {(Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'designer' && (
+                        <select
+                          className="border p-2 w-full mb-2"
+                          value={taskFormat}
+                          onChange={(e) => setTaskFormat(e.target.value)}
+                        >
+                          <option value="">Формат не выбран</option>
+                          {DESIGNER_FORMATS.map((f) => (
+                            <option key={f} value={f}>
+                              {FORMAT_ICONS[f]} {f}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </>
+                ) : null}
+              </>
+            )}
+            {executorId && !isEditing ? (
                 <div className="space-y-1 mb-2">
                   <div>Исполнитель: {getExecutorName(selectedTask?.executor_id)}</div>
                   {project && <div>Проект: {project}</div>}
@@ -923,8 +1145,7 @@ function Tasks() {
                   )}
                   <div>Кто поставил задачу: {getUserName(selectedTask?.author_id)}</div>
                 </div>
-              )
-            )}
+            ) : null}
             <div className="flex gap-2 mb-4">
               <input
                 type="date"

@@ -16,6 +16,8 @@ interface Operator {
   role: string
   color: string
   price_per_video: number
+  is_salaried: boolean
+  monthly_salary?: number
 }
 
 function Operators() {
@@ -26,6 +28,8 @@ function Operators() {
   const [role, setRole] = useState('mobile')
   const [color, setColor] = useState('#ff0000')
   const [price, setPrice] = useState('')
+  const [isSalaried, setIsSalaried] = useState(false)
+  const [salary, setSalary] = useState('')
 
   const token = localStorage.getItem('token')
 
@@ -58,6 +62,8 @@ function Operators() {
     setRole('mobile')
     setColor('#ff0000')
     setPrice('')
+    setIsSalaried(false)
+    setSalary('')
     setShow(true)
   }
 
@@ -66,12 +72,21 @@ function Operators() {
     setName(o.name)
     setRole(o.role)
     setColor(o.color)
-    setPrice(formatInput(String(o.price_per_video)))
+    setPrice(formatInput(String(o.price_per_video || 0)))
+    setIsSalaried(o.is_salaried || false)
+    setSalary(formatInput(String(o.monthly_salary || 0)))
     setShow(true)
   }
 
   const save = async () => {
-    const payload = { name, role, color, price_per_video: parseNumber(price) }
+    const payload = { 
+      name, 
+      role, 
+      color, 
+      is_salaried: isSalaried,
+      price_per_video: isSalaried ? 0 : parseNumber(price),
+      monthly_salary: isSalaried ? parseNumber(salary) : null
+    }
     if (editing) {
       await fetch(`${API_URL}/operators/${editing.id}`, {
         method: 'PUT',
@@ -109,7 +124,7 @@ function Operators() {
             <th className="px-4 py-2 border">Имя</th>
             <th className="px-4 py-2 border">Роль</th>
             <th className="px-4 py-2 border">Цвет</th>
-            <th className="px-4 py-2 border">Цена за 1 видео</th>
+            <th className="px-4 py-2 border">Оплата</th>
             <th className="px-4 py-2 border"></th>
           </tr>
         </thead>
@@ -122,7 +137,9 @@ function Operators() {
                 <span className="inline-block w-4 h-4 rounded" style={{background:o.color}} />
               </td>
               <td className="px-4 py-2 border">
-                {o.price_per_video.toLocaleString('ru-RU')}
+                {o.is_salaried 
+                  ? `${(o.monthly_salary || 0).toLocaleString('ru-RU')} сум/мес` 
+                  : `${(o.price_per_video || 0).toLocaleString('ru-RU')} сум/видео`}
               </td>
               <td className="px-4 py-2 border space-x-2">
                 <button className="text-blue-500" onClick={() => openEdit(o)}>Редактировать</button>
@@ -145,7 +162,60 @@ function Operators() {
             <label className="block mb-4">Цвет
               <input type="color" className="border p-2 w-full" value={color} onChange={e => setColor(e.target.value)} />
             </label>
-            <input className="border p-2 w-full mb-4" placeholder="Цена за 1 видео" value={price} onChange={e => setPrice(formatInput(e.target.value))} />
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Тип оплаты</label>
+              <div className="space-y-2">
+                <label className="flex items-center">
+                  <input
+                    type="radio"
+                    name="paymentType"
+                    checked={!isSalaried}
+                    onChange={() => setIsSalaried(false)}
+                    className="mr-2"
+                  />
+                  За видео
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="radio"
+                    name="paymentType"
+                    checked={isSalaried}
+                    onChange={() => setIsSalaried(true)}
+                    className="mr-2"
+                  />
+                  Фиксированная зарплата
+                </label>
+              </div>
+            </div>
+            
+            {!isSalaried ? (
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Цена за видео</label>
+                <div className="relative">
+                  <input 
+                    className="border p-2 w-full pr-12" 
+                    placeholder="300 000" 
+                    value={price} 
+                    onChange={e => setPrice(formatInput(e.target.value))} 
+                  />
+                  <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500">сум</span>
+                </div>
+              </div>
+            ) : (
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Месячная зарплата</label>
+                <div className="relative">
+                  <input 
+                    className="border p-2 w-full pr-12" 
+                    placeholder="5 000 000" 
+                    value={salary} 
+                    onChange={e => setSalary(formatInput(e.target.value))} 
+                  />
+                  <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500">сум</span>
+                </div>
+              </div>
+            )}
             <div className="flex justify-end">
               <button className="mr-2 px-4 py-1 border rounded" onClick={() => setShow(false)}>Отмена</button>
               <button className="bg-blue-500 text-white px-4 py-1 rounded" onClick={save}>Сохранить</button>

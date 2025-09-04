@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import Navbar from './components/Navbar'
 import Login from './pages/Login'
@@ -17,13 +17,33 @@ import Digital from './pages/Digital'
 import SmmProjects from './pages/SmmProjects'
 import Analytics from './pages/Analytics'
 import Resources from './pages/Resources'
+import ExpenseReports from './pages/ExpenseReports'
+import PersonalExpenses from './pages/PersonalExpenses'
 import { SidebarProvider, useSidebar } from './contexts/SidebarContext'
 
 function AppContent() {
   const [token, setToken] = useState(localStorage.getItem('token'))
   const [role, setRole] = useState(localStorage.getItem('role'))
-  const defaultPath = role === 'admin' ? '/smm-projects' : '/tasks'
+  const location = useLocation()
+  
+  // Определяем путь по умолчанию с учетом последней посещенной страницы
+  const getDefaultPath = () => {
+    const lastVisitedPath = localStorage.getItem('lastVisitedPath')
+    const defaultPath = '/smm-projects' // Все пользователи начинают с СММ проектов
+    
+    // Если есть сохраненный путь, используем его, иначе путь по умолчанию
+    return lastVisitedPath || defaultPath
+  }
+  
+  const defaultPath = getDefaultPath()
   const { isCollapsed } = useSidebar()
+
+  // Сохраняем текущий путь при изменении маршрута
+  useEffect(() => {
+    if (token && location.pathname !== '/login') {
+      localStorage.setItem('lastVisitedPath', location.pathname)
+    }
+  }, [location.pathname, token])
 
   useEffect(() => {
     const handleStorageChange = () => {
@@ -47,11 +67,36 @@ function AppContent() {
       clearInterval(interval)
     }
   }, [token, role])
+
+  // Автообновление страницы каждую минуту - ОТКЛЮЧЕНО
+  // useEffect(() => {
+  //   if (token) {
+  //     const autoRefreshInterval = setInterval(() => {
+  //       window.location.reload()
+  //     }, 60000) // 60 секунд = 1 минута
+  //     
+  //     return () => clearInterval(autoRefreshInterval)
+  //   }
+  // }, [token])
   
   if (!token) {
-    // Clear any stale data when no token
-    localStorage.removeItem('role')
-    localStorage.removeItem('userId')
+    // Check if we have role/userId without token (shouldn't happen after login fix)
+    const currentRole = localStorage.getItem('role')
+    const currentUserId = localStorage.getItem('userId')
+    
+    // console.log('DEBUG App: No token found', { 
+    //   currentRole, 
+    //   currentUserId,
+    //   shouldClear: !currentRole || !currentUserId 
+    // })
+    
+    // Only clear if both role and userId are missing (avoid clearing fresh login data)
+    if (!currentRole || !currentUserId) {
+      // console.log('DEBUG App: Clearing stale role and userId')
+      localStorage.removeItem('role')
+      localStorage.removeItem('userId')
+    }
+    
     return (
       <Routes>
         <Route path="/login" element={<Login />} />
@@ -59,6 +104,12 @@ function AppContent() {
       </Routes>
     )
   }
+
+  // console.log('DEBUG App: Token exists, role and userId should be preserved:', {
+  //   token: token ? 'exists' : 'missing',
+  //   role: role,
+  //   userId: localStorage.getItem('userId')
+  // })
 
   return (
     <div className="flex min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -86,6 +137,8 @@ function AppContent() {
             <Route path="/smm-projects" element={<SmmProjects />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/resources" element={<Resources />} />
+            <Route path="/expense-reports" element={<ExpenseReports />} />
+            <Route path="/personal-expenses" element={<PersonalExpenses />} />
             <Route path="*" element={<Navigate to={defaultPath} />} />
           </Routes>
         </div>

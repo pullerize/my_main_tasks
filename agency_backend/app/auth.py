@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
+import os
+import secrets
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -10,9 +12,13 @@ from sqlalchemy.orm import Session
 from . import models, schemas
 from .database import SessionLocal
 
-SECRET_KEY = "CHANGE_ME"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+# Load from environment or generate secure random key
+SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
+if SECRET_KEY == "CHANGE_ME" or len(SECRET_KEY) < 32:
+    raise ValueError("SECRET_KEY must be set to a secure random string of at least 32 characters")
+
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -35,23 +41,36 @@ def get_password_hash(password):
 
 
 def get_user(db: Session, username: str):
-    return db.query(models.User).filter(models.User.login == username).first()
+    return db.query(models.User).filter(models.User.telegram_username == username).first()
 
 
 def authenticate_user(db: Session, username: str, password: str):
+    # Validate input
+    if not username or not password:
+        return None
+    if len(username) > 100 or len(password) > 200:
+        return None
+    
     user = get_user(db, username)
-    if not user or not verify_password(password, user.hashed_password):
+    if not user:
+        # Perform dummy password verification to prevent timing attacks
+        pwd_context.verify("dummy_password", "$2b$12$dummy.hash.to.prevent.timing.attacks")
         return None
+    
+    if not verify_password(password, user.hashed_password):
+        return None
+    
     # Check if user is inactive
-    if user.role == models.RoleEnum.inactive:
+    if user.role == models.RoleEnum.inactive or not user.is_active:
         return None
+    
     return user
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
-    to_encode.update({"exp": expire})
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire, "iat": datetime.utcnow()})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -81,5 +100,15 @@ def get_current_active_user(current_user: models.User = Depends(get_current_user
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive"
+        )
+    return current_user
+
+
+def get_current_admin_user(current_user: models.User = Depends(get_current_active_user)):
+    # Check if user is admin
+    if current_user.role != models.RoleEnum.admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
         )
     return current_user

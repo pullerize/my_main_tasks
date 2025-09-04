@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { API_URL } from '../api';
+import { formatDateTimeUTC5 } from '../utils/dateUtils';
+import { usePersistedState } from '../utils/filterStorage';
 
 interface LinkItem { id: number; name: string; url: string }
 interface TaskItem {
@@ -75,9 +77,9 @@ export default function DigitalProject() {
   const [project, setProject] = useState<ProjectInfo | undefined>(state as ProjectInfo | undefined);
   const token = localStorage.getItem('token');
   const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const [filterDate, setFilterDate] = useState('all');
-  const [customDate, setCustomDate] = useState('');
-  const [filterStatus, setFilterStatus] = useState('all');
+  const [filterDate, setFilterDate] = usePersistedState('filter_digital_project_date', 'all');
+  const [customDate, setCustomDate] = usePersistedState('filter_digital_project_custom_date', '');
+  const [filterStatus, setFilterStatus] = usePersistedState('filter_digital_project_status', 'all');
   const [show, setShow] = useState(false);
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
@@ -413,14 +415,7 @@ export default function DigitalProject() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-900">
-                          {new Date(t.created_at.endsWith('Z') ? t.created_at : t.created_at + 'Z').toLocaleString('ru-RU', { 
-                            timeZone: timezone,
-                            day: '2-digit',
-                            month: '2-digit',
-                            year: '2-digit',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
+                          {formatDateTimeUTC5(t.created_at)}
                         </div>
                       </td>
                       <td className="px-6 py-4">

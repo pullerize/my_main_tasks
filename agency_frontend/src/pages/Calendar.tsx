@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../api'
+import { usePersistedState } from '../utils/filterStorage'
 
 interface Shooting {
   id: number
@@ -48,8 +49,8 @@ function Calendar() {
   const [projects, setProjects] = useState<Project[]>([])
   const [weekStart, setWeekStart] = useState(startOfWeek(new Date()))
   const [now, setNow] = useState(new Date())
-  const [filterYear,setFilterYear]=useState(new Date().getFullYear())
-  const [filterMonth,setFilterMonth]=useState(new Date().getMonth())
+  const [filterYear,setFilterYear]=usePersistedState('filter_calendar_year', new Date().getFullYear())
+  const [filterMonth,setFilterMonth]=usePersistedState('filter_calendar_month', new Date().getMonth())
 
   const token = localStorage.getItem('token')
 

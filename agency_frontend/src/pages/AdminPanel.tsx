@@ -2,18 +2,16 @@ import { useState } from 'react'
 import Users from './Users'
 import Operators from './Operators'
 import Projects from './ProjectsAdmin'
-import ExpensesAdmin from './ExpensesAdmin'
 import Taxes from './Taxes'
 import Settings from './Settings'
 
 function AdminPanel() {
-  const [tab, setTab] = useState<'users'|'operators'|'projects'|'expenses'|'taxes'|'settings'>('users')
+  const [tab, setTab] = useState<'users'|'operators'|'projects'|'taxes'|'settings'>('users')
 
   const tabs = [
     { id: 'users', label: 'Пользователи' },
     { id: 'operators', label: 'Операторы' },
     { id: 'projects', label: 'Проекты' },
-    { id: 'expenses', label: 'Расходы' },
     { id: 'taxes', label: 'Налоги' },
     { id: 'settings', label: 'Настройки' }
   ]
@@ -46,7 +44,6 @@ function AdminPanel() {
         {tab === 'users' && <Users />}
         {tab === 'operators' && <Operators />}
         {tab === 'projects' && <Projects />}
-        {tab === 'expenses' && <ExpensesAdmin />}
         {tab === 'taxes' && <Taxes />}
         {tab === 'settings' && <Settings />}
       </div>

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { API_URL } from '../api';
+import { formatDateTimeUTC5, formatDeadlineUTC5 } from '../utils/dateUtils';
 
 interface DigitalProject {
   id: number;
@@ -114,13 +115,11 @@ export default function DigitalReports() {
   };
 
   const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString('ru-RU', {
-      day: '2-digit',
-      month: '2-digit', 
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+    return formatDateTimeUTC5(dateStr);
+  };
+
+  const formatDeadline = (dateStr: string) => {
+    return formatDeadlineUTC5(dateStr);
   };
 
   const getStatusColor = (status: string) => {
@@ -365,8 +364,8 @@ export default function DigitalReports() {
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-900">
                           {project.status === 'completed' && project.deadline ? 
-                            formatDate(project.deadline) : 
-                            project.deadline ? formatDate(project.deadline) : 'Не указан'
+                            formatDeadline(project.deadline) : 
+                            project.deadline ? formatDeadline(project.deadline) : 'Не указан'
                           }
                         </div>
                       </td>
@@ -446,7 +445,7 @@ export default function DigitalReports() {
                                           </td>
                                           <td className="px-4 py-3">
                                             <div className="text-sm text-gray-900">
-                                              {task.deadline ? formatDate(task.deadline) : 'Не указан'}
+                                              {task.deadline ? formatDeadline(task.deadline) : 'Не указан'}
                                             </div>
                                           </td>
                                           <td className="px-4 py-3">
