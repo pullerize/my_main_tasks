@@ -19,6 +19,7 @@ import Analytics from './pages/Analytics'
 import Resources from './pages/Resources'
 import ExpenseReports from './pages/ExpenseReports'
 import PersonalExpenses from './pages/PersonalExpenses'
+import LeadBoard from './pages/LeadBoard'
 import { SidebarProvider, useSidebar } from './contexts/SidebarContext'
 
 function AppContent() {
@@ -112,8 +113,9 @@ function AppContent() {
   // })
 
   return (
-    <div className="flex min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+    <div className="flex min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 relative">
       <Navbar key="navbar-always-visible" />
+      
       <main 
         className={`
           flex-1 px-4 sm:px-8 lg:px-[100px] py-8 max-w-full min-h-screen transition-all duration-300 ease-in-out
@@ -139,6 +141,7 @@ function AppContent() {
             <Route path="/resources" element={<Resources />} />
             <Route path="/expense-reports" element={<ExpenseReports />} />
             <Route path="/personal-expenses" element={<PersonalExpenses />} />
+            <Route path="/leads" element={<LeadBoard />} />
             <Route path="*" element={<Navigate to={defaultPath} />} />
           </Routes>
         </div>

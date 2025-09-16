@@ -78,6 +78,29 @@ interface Task {
   finished_at?: string | null
 }
 
+interface ServiceTypeData {
+  service_type: string
+  created: number
+  completed: number
+  efficiency: number
+}
+
+interface EmployeeServiceAnalytics {
+  employee_id: number
+  employee_name: string
+  service_types: ServiceTypeData[]
+  total_created: number
+  total_completed: number
+  overall_efficiency: number
+}
+
+interface ServiceTypesAnalytics {
+  employees: EmployeeServiceAnalytics[]
+  period_start: string
+  period_end: string
+  total_service_types: string[]
+}
+
 function Analytics() {
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -87,17 +110,27 @@ function Analytics() {
   const [digitalTasks, setDigitalTasks] = useState<any[]>([])
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
-  const [teamFilter, setTeamFilter] = useState<'all' | 'active'>('active')
+
+  // Service Analytics state
+  const [serviceAnalytics, setServiceAnalytics] = useState<ServiceTypesAnalytics | null>(null)
+  const [serviceAnalyticsEmployee, setServiceAnalyticsEmployee] = useState<number | null>(null)
+  const [serviceStartDate, setServiceStartDate] = useState('')
+  const [serviceEndDate, setServiceEndDate] = useState('')
 
   useEffect(() => {
     fetchData()
-  }, [timeRange, customStartDate, customEndDate, teamFilter])
+    loadServiceAnalytics()
+  }, [timeRange, customStartDate, customEndDate])
+
+  useEffect(() => {
+    loadServiceAnalytics()
+  }, [serviceStartDate, serviceEndDate, serviceAnalyticsEmployee])
 
   const fetchData = async () => {
     try {
       const token = localStorage.getItem('token')
       const headers = { Authorization: `Bearer ${token}` }
-      
+
       // Загружаем пользователей, задачи и проекты
       const [usersRes, tasksRes, digitalProjectsRes, projectsRes] = await Promise.all([
         fetch(`${API_URL}/users/`, { headers }),
@@ -105,12 +138,12 @@ function Analytics() {
         fetch(`${API_URL}/digital/projects`, { headers }),
         fetch(`${API_URL}/projects/`, { headers })
       ])
-      
+
       const usersData = usersRes.ok ? await usersRes.json() : []
       const tasksData = tasksRes.ok ? await tasksRes.json() : []
       const digitalProjects = digitalProjectsRes.ok ? await digitalProjectsRes.json() : []
       const projectsData = projectsRes.ok ? await projectsRes.json() : []
-      
+
       // Загружаем задачи из Digital проектов
       const digitalTasksPromises = digitalProjects.map(async (project: any) => {
         try {
@@ -129,14 +162,14 @@ function Analytics() {
           return []
         }
       })
-      
+
       const digitalTasksArrays = await Promise.all(digitalTasksPromises)
       const digitalTasksData = digitalTasksArrays.flat()
-      
+
       setUsers(usersData)
       setTasks(tasksData)
       setDigitalTasks(digitalTasksData)
-      
+
       // Вычисляем аналитику
       const analyticsData = calculateAnalytics(usersData, tasksData, digitalTasksData, projectsData)
       setData(analyticsData)
@@ -147,39 +180,60 @@ function Analytics() {
     }
   }
 
+  const loadServiceAnalytics = async () => {
+    const token = localStorage.getItem('token')
+    try {
+      const params = new URLSearchParams()
+      if (serviceStartDate) params.append('start_date', serviceStartDate)
+      if (serviceEndDate) params.append('end_date', serviceEndDate)
+      if (serviceAnalyticsEmployee) params.append('employee_id', serviceAnalyticsEmployee.toString())
+
+      const response = await fetch(`${API_URL}/analytics/service-types?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setServiceAnalytics(data)
+      }
+    } catch (error) {
+      console.error('Error loading service analytics:', error)
+    }
+  }
+
   const calculateAnalytics = (users: User[], tasks: Task[], digitalTasks: any[], projects: any[]): AnalyticsData => {
     const allTasks = [...tasks, ...digitalTasks]
-    
+
     // Фильтруем архивированные проекты
     const activeProjects = projects.filter((p: any) => !p.is_archived)
-    
+
     // Фильтруем задачи по времени
     const filteredTasks = filterTasksByTimeRange(allTasks)
     const previousPeriodTasks = filterTasksByPreviousPeriod(allTasks)
-    
+
     // Статистика задач
     const completedTasks = filteredTasks.filter(t => t.status === 'done' || t.status === 'completed')
     const inProgressTasks = filteredTasks.filter(t => t.status !== 'done' && t.status !== 'completed')
     const overdueTasks = filteredTasks.filter(t => t.deadline && new Date(t.deadline) < new Date() && t.status !== 'done' && t.status !== 'completed')
-    
+
     // Статистика за предыдущий период для трендов
     const previousCompletedTasks = previousPeriodTasks.filter(t => t.status === 'done' || t.status === 'completed')
     const previousOverdueTasks = previousPeriodTasks.filter(t => t.deadline && new Date(t.deadline) < new Date() && t.status !== 'done' && t.status !== 'completed')
-    
+
     // Задачи по типам (по ролям исполнителей) - используем все задачи
     const tasksByRole = calculateTasksByRole(users, tasks, digitalTasks)
-    
+
     // Производительность команды - используем отфильтрованные по времени задачи
     const teamProductivity = calculateTeamProductivity(users, filteredTasks)
-    
+
     // Динамика задач по периодам
     const tasksByPeriod = calculateTasksByPeriod(allTasks)
-    
+
     // Расчет трендов
     const totalTrend = calculateTrend(filteredTasks.length, previousPeriodTasks.length)
     const completedTrend = calculateTrend(completedTasks.length, previousCompletedTasks.length)
     const overdueTrend = calculateTrend(overdueTasks.length, previousOverdueTasks.length)
-    
+
     return {
       tasksStats: {
         total: filteredTasks.length,
@@ -200,12 +254,12 @@ function Analytics() {
       tasksByType: tasksByRole
     }
   }
-  
+
   const filterTasksByTimeRange = (tasks: Task[]) => {
     const now = new Date()
     let startDate: Date
     let endDate: Date = now
-    
+
     if (timeRange === 'custom') {
       if (!customStartDate || !customEndDate) return tasks
       startDate = new Date(customStartDate)
@@ -225,7 +279,7 @@ function Analytics() {
           return tasks
       }
     }
-    
+
     return tasks.filter(task => {
       const taskDate = new Date(task.created_at)
       return taskDate >= startDate && taskDate <= endDate
@@ -236,7 +290,7 @@ function Analytics() {
     const now = new Date()
     let startDate: Date
     let endDate: Date
-    
+
     if (timeRange === 'custom') {
       if (!customStartDate || !customEndDate) return []
       const currentStart = new Date(customStartDate)
@@ -262,7 +316,7 @@ function Analytics() {
           return []
       }
     }
-    
+
     return tasks.filter(task => {
       const taskDate = new Date(task.created_at)
       return taskDate >= startDate && taskDate <= endDate
@@ -275,7 +329,7 @@ function Analytics() {
     }
     return Math.round(((currentValue - previousValue) / previousValue) * 100)
   }
-  
+
   const calculateTasksByRole = (users: User[], tasks: Task[], digitalTasks: any[]) => {
     const roleCategories = {
       'Дизайн-задачи': ['designer'],
@@ -283,10 +337,10 @@ function Analytics() {
       'СММ-задачи': ['smm_manager'],
       'Админ-задачи': ['admin']
     }
-    
+
     const result = Object.entries(roleCategories).map(([categoryName, roles]) => {
       let count = 0
-      
+
       if (categoryName === 'Digital-задачи') {
         // Считаем все Digital задачи
         count = digitalTasks.length
@@ -297,35 +351,32 @@ function Analytics() {
           return executor && roles.includes(executor.role)
         }).length
       }
-      
+
       const colors = {
         'Дизайн-задачи': '#8B5CF6',
-        'Digital-задачи': '#06B6D4', 
+        'Digital-задачи': '#06B6D4',
         'СММ-задачи': '#10B981',
         'Админ-задачи': '#F59E0B'
       }
-      
+
       return {
         name: categoryName,
         value: count,
         color: colors[categoryName as keyof typeof colors]
       }
     })
-    
+
     return result
   }
-  
+
   const calculateTeamProductivity = (users: User[], filteredTasks: Task[]) => {
-    // Фильтруем пользователей в зависимости от выбранного фильтра
-    const filteredUsers = teamFilter === 'active' 
-      ? users.filter(user => user.role !== 'inactive') 
-      : users
+    const filteredUsers = users.filter(user => user.role !== 'inactive')
 
     return filteredUsers.map(user => {
       // Используем уже отфильтрованные по времени задачи
       const userTasks = filteredTasks.filter(t => t.executor_id === user.id)
       const completedTasks = userTasks.filter(t => t.status === 'done' || t.status === 'completed')
-      
+
       return {
         name: user.name,
         tasksAssigned: userTasks.length, // Задачи за выбранный период
@@ -334,36 +385,36 @@ function Analytics() {
       }
     })
   }
-  
+
   const calculateTasksByPeriod = (allTasks: Task[]) => {
     const now = new Date()
     let periods: any[] = []
-    
+
     if (timeRange === 'week') {
       // Находим понедельник текущей недели
       const today = new Date(now)
       const dayOfWeek = today.getDay() // 0 = воскресенье, 1 = понедельник, ..., 6 = суббота
       const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek // Если воскресенье, то -6, иначе 1 - dayOfWeek
       const monday = new Date(today.getTime() + mondayOffset * 24 * 60 * 60 * 1000)
-      
+
       // Группируем по дням с понедельника по воскресенье
       for (let i = 0; i < 7; i++) {
         const date = new Date(monday.getTime() + i * 24 * 60 * 60 * 1000)
         const dayName = date.toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric' })
         const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
         const dayEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59)
-        
+
         const created = allTasks.filter(t => {
           const taskDate = new Date(t.created_at)
           return taskDate >= dayStart && taskDate <= dayEnd
         }).length
-        
+
         const completed = allTasks.filter(t => {
           if (!t.finished_at) return false
           const finishedDate = new Date(t.finished_at)
           return finishedDate >= dayStart && finishedDate <= dayEnd
         }).length
-        
+
         periods.push({ period: dayName, created, completed })
       }
     } else if (timeRange === 'year') {
@@ -373,18 +424,18 @@ function Analytics() {
         const monthName = date.toLocaleDateString('ru-RU', { month: 'short' })
         const monthStart = new Date(date.getFullYear(), date.getMonth(), 1)
         const monthEnd = new Date(date.getFullYear(), date.getMonth() + 1, 0)
-        
+
         const created = allTasks.filter(t => {
           const taskDate = new Date(t.created_at)
           return taskDate >= monthStart && taskDate <= monthEnd
         }).length
-        
+
         const completed = allTasks.filter(t => {
           if (!t.finished_at) return false
           const finishedDate = new Date(t.finished_at)
           return finishedDate >= monthStart && finishedDate <= monthEnd
         }).length
-        
+
         periods.push({ period: monthName, created, completed })
       }
     } else if (timeRange === 'custom' && customStartDate && customEndDate) {
@@ -393,60 +444,84 @@ function Analytics() {
       const endDate = new Date(customEndDate)
       const diffTime = Math.abs(endDate.getTime() - startDate.getTime())
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-      
+
       for (let i = 0; i <= diffDays; i++) {
         const date = new Date(startDate.getTime() + i * 24 * 60 * 60 * 1000)
         const dayName = date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
         const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
         const dayEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59)
-        
+
         const created = allTasks.filter(t => {
           const taskDate = new Date(t.created_at)
           return taskDate >= dayStart && taskDate <= dayEnd
         }).length
-        
+
         const completed = allTasks.filter(t => {
           if (!t.finished_at) return false
           const finishedDate = new Date(t.finished_at)
           return finishedDate >= dayStart && finishedDate <= dayEnd
         }).length
-        
+
         periods.push({ period: dayName, created, completed })
       }
     } else {
       // По умолчанию - группируем по дням за текущий месяц
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
       const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-      
+
       for (let day = 1; day <= monthEnd.getDate(); day++) {
         const date = new Date(now.getFullYear(), now.getMonth(), day)
         const dayName = day.toString()
         const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
         const dayEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59)
-        
+
         const created = allTasks.filter(t => {
           const taskDate = new Date(t.created_at)
           return taskDate >= dayStart && taskDate <= dayEnd
         }).length
-        
+
         const completed = allTasks.filter(t => {
           if (!t.finished_at) return false
           const finishedDate = new Date(t.finished_at)
           return finishedDate >= dayStart && finishedDate <= dayEnd
         }).length
-        
+
         periods.push({ period: dayName, created, completed })
       }
     }
-    
+
     return periods
   }
 
+  // Подготавливаем данные для общей гистограммы типов услуг
+  const prepareServiceChartData = () => {
+    if (!serviceAnalytics) return []
+
+    const serviceTypeMap: Record<string, { created: number; completed: number }> = {}
+
+    serviceAnalytics.employees.forEach(emp => {
+      emp.service_types.forEach(service => {
+        if (!serviceTypeMap[service.service_type]) {
+          serviceTypeMap[service.service_type] = { created: 0, completed: 0 }
+        }
+        serviceTypeMap[service.service_type].created += service.created
+        serviceTypeMap[service.service_type].completed += service.completed
+      })
+    })
+
+    return Object.entries(serviceTypeMap).map(([type, data]) => ({
+      service_type: type,
+      Создано: data.created,
+      Завершено: data.completed,
+      Эффективность: data.created > 0 ? Math.round((data.completed / data.created) * 100) : 0
+    }))
+  }
+
   const displayData = data || {
-    tasksStats: { 
-      total: 0, 
-      completed: 0, 
-      inProgress: 0, 
+    tasksStats: {
+      total: 0,
+      completed: 0,
+      inProgress: 0,
       overdue: 0,
       totalTrend: 0,
       completedTrend: 0,
@@ -533,7 +608,7 @@ function Analytics() {
                 <option value="year">Год</option>
                 <option value="custom">Произвольный период</option>
               </select>
-              
+
               {timeRange === 'custom' && (
                 <div className="flex gap-2">
                   <input
@@ -609,7 +684,7 @@ function Analytics() {
               <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
               <XAxis dataKey="period" stroke="#6B7280" />
               <YAxis stroke="#6B7280" />
-              <Tooltip 
+              <Tooltip
                 contentStyle={{
                   backgroundColor: 'white',
                   border: '1px solid #E5E7EB',
@@ -656,7 +731,7 @@ function Analytics() {
                   <Cell key={`cell-${index}`} fill={entry.color} />
                 ))}
               </Pie>
-              <Tooltip 
+              <Tooltip
                 contentStyle={{
                   backgroundColor: 'white',
                   border: '1px solid #E5E7EB',
@@ -670,49 +745,210 @@ function Analytics() {
         </div>
       </div>
 
-      {/* Производительность команды */}
+      {/* Аналитика по типам услуг */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6">
-          <h3 className="text-lg font-semibold text-gray-900">Производительность команды</h3>
-          <div className="mt-2 sm:mt-0">
+          <h3 className="text-lg font-semibold text-gray-900">Аналитика по типам услуг</h3>
+          <div className="mt-2 sm:mt-0 flex gap-2">
+            <input
+              type="date"
+              value={serviceStartDate}
+              onChange={(e) => setServiceStartDate(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-2 bg-white shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+              placeholder="Начало"
+            />
+            <input
+              type="date"
+              value={serviceEndDate}
+              onChange={(e) => setServiceEndDate(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-2 bg-white shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+              placeholder="Конец"
+            />
             <select
-              value={teamFilter}
-              onChange={(e) => setTeamFilter(e.target.value as 'all' | 'active')}
+              value={serviceAnalyticsEmployee || ''}
+              onChange={(e) => setServiceAnalyticsEmployee(e.target.value ? parseInt(e.target.value) : null)}
               className="border border-gray-300 rounded-lg px-4 py-2 bg-white shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
             >
-              <option value="active">Производительность текущей команды</option>
-              <option value="all">Производительность всех работников 8BIT</option>
+              <option value="">Все сотрудники</option>
+              {users.map(user => (
+                <option key={user.id} value={user.id}>{user.name}</option>
+              ))}
             </select>
           </div>
         </div>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={displayData?.teamProductivity || []}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-            <XAxis dataKey="name" stroke="#6B7280" />
-            <YAxis stroke="#6B7280" />
-            <Tooltip 
-              contentStyle={{
-                backgroundColor: 'white',
-                border: '1px solid #E5E7EB',
-                borderRadius: '8px',
-                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-              }}
-            />
-            <Legend />
-            <Bar 
-              dataKey="tasksAssigned" 
-              fill="#3B82F6" 
-              name="Общее количество задач"
-              radius={[4, 4, 0, 0]}
-            />
-            <Bar 
-              dataKey="tasksCompleted" 
-              fill="#10B981" 
-              name="Завершено задач"
-              radius={[4, 4, 0, 0]}
-            />
-          </BarChart>
-        </ResponsiveContainer>
+
+        {serviceAnalytics ? (
+          <div className="space-y-6">
+            {/* Общая статистика */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <div className="flex items-center">
+                  <div className="p-2 bg-blue-100 rounded-lg">
+                    <Users className="h-6 w-6 text-blue-600" />
+                  </div>
+                  <div className="ml-4">
+                    <p className="text-sm font-medium text-gray-600">Активных сотрудников</p>
+                    <p className="text-2xl font-bold text-gray-900">{serviceAnalytics.employees.length}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <div className="flex items-center">
+                  <div className="p-2 bg-green-100 rounded-lg">
+                    <Activity className="h-6 w-6 text-green-600" />
+                  </div>
+                  <div className="ml-4">
+                    <p className="text-sm font-medium text-gray-600">Типов услуг</p>
+                    <p className="text-2xl font-bold text-gray-900">{serviceAnalytics.total_service_types.length}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <div className="flex items-center">
+                  <div className="p-2 bg-yellow-100 rounded-lg">
+                    <Target className="h-6 w-6 text-yellow-600" />
+                  </div>
+                  <div className="ml-4">
+                    <p className="text-sm font-medium text-gray-600">Всего создано</p>
+                    <p className="text-2xl font-bold text-gray-900">
+                      {serviceAnalytics.employees.reduce((sum, emp) => sum + emp.total_created, 0)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <div className="flex items-center">
+                  <div className="p-2 bg-purple-100 rounded-lg">
+                    <Award className="h-6 w-6 text-purple-600" />
+                  </div>
+                  <div className="ml-4">
+                    <p className="text-sm font-medium text-gray-600">Всего завершено</p>
+                    <p className="text-2xl font-bold text-gray-900">
+                      {serviceAnalytics.employees.reduce((sum, emp) => sum + emp.total_completed, 0)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Основная гистограмма */}
+            <div className="bg-gray-50 rounded-lg">
+              <h4 className="text-lg font-semibold text-gray-900 p-4">
+                Статистика по типам услуг
+              </h4>
+              <div className="p-4">
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={prepareServiceChartData()} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="service_type"
+                      angle={-45}
+                      textAnchor="end"
+                      height={80}
+                    />
+                    <YAxis />
+                    <Tooltip
+                      formatter={(value, name) => [value, name]}
+                      labelFormatter={(label) => `Тип услуги: ${label}`}
+                    />
+                    <Legend />
+                    <Bar dataKey="Создано" fill="#3B82F6" name="Создано задач" stroke="#1E40AF" strokeWidth={1} />
+                    <Bar dataKey="Завершено" fill="#10B981" name="Завершено задач" stroke="#047857" strokeWidth={1} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Табличное представление данных */}
+              <div className="p-4 border-t">
+                <h5 className="text-md font-semibold text-gray-800 mb-3">Детальная статистика по типам услуг</h5>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left py-2 px-3 font-medium text-gray-600">Тип услуги</th>
+                        <th className="text-center py-2 px-3 font-medium text-gray-600">Создано</th>
+                        <th className="text-center py-2 px-3 font-medium text-gray-600">Завершено</th>
+                        <th className="text-center py-2 px-3 font-medium text-gray-600">Эффективность</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prepareServiceChartData().map((item, index) => (
+                        <tr key={index} className="border-b hover:bg-gray-50">
+                          <td className="py-2 px-3 font-medium">{item.service_type}</td>
+                          <td className="py-2 px-3 text-center">
+                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                              {item.Создано}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                              {item.Завершено}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                              item.Эффективность >= 80 ? 'bg-green-100 text-green-800' :
+                              item.Эффективность >= 50 ? 'bg-yellow-100 text-yellow-800' :
+                              'bg-red-100 text-red-800'
+                            }`}>
+                              {item.Эффективность}%
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                      {prepareServiceChartData().length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="py-4 px-3 text-center text-gray-500">
+                            Нет данных для выбранного периода
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Детальная статистика по сотрудникам */}
+            <div className="bg-gray-50 rounded-lg">
+              <h4 className="text-lg font-semibold text-gray-900 p-4">
+                Детальная статистика сотрудников
+              </h4>
+              <div className="p-4 space-y-4 max-h-80 overflow-y-auto">
+                {serviceAnalytics.employees.map((employee) => (
+                  <div key={employee.employee_id} className="border-l-4 border-blue-500 pl-4 bg-white rounded p-3">
+                    <div className="flex justify-between items-center mb-2">
+                      <h5 className="font-semibold text-gray-900">{employee.employee_name}</h5>
+                      <span className="text-sm text-gray-600">
+                        {employee.overall_efficiency}% эффективность
+                      </span>
+                    </div>
+                    <div className="text-sm text-gray-600 mb-2">
+                      Создано: {employee.total_created} | Завершено: {employee.total_completed}
+                    </div>
+                    <div className="space-y-1">
+                      {employee.service_types.map((service) => (
+                        <div key={service.service_type} className="flex justify-between text-xs">
+                          <span className="text-gray-700">{service.service_type}:</span>
+                          <span className="text-gray-600">
+                            {service.created}/{service.completed} ({service.efficiency}%)
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center py-8">
+            <p className="text-gray-500">Загрузка аналитики по типам услуг...</p>
+          </div>
+        )}
       </div>
     </div>
   )

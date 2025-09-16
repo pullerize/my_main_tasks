@@ -13,10 +13,15 @@ from sqlalchemy import (
     BigInteger,
 )
 from sqlalchemy.orm import relationship
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import enum
 
 from .database import Base
+
+# Функция для получения текущего времени в UTC+5
+def get_local_time_utc5():
+    """Получить текущее время с учетом UTC+5"""
+    return datetime.now(timezone.utc) + timedelta(hours=5)
 
 class RoleEnum(str, enum.Enum):
     designer = "designer"
@@ -55,9 +60,15 @@ class User(Base):
     expenses = relationship("EmployeeExpense", back_populates="user")
 
 class TaskStatus(str, enum.Enum):
-    in_progress = "in_progress"
-    done = "done" 
-    cancelled = "cancelled"
+    new = "new"  # Новая задача, еще не принята в работу
+    in_progress = "in_progress"  # Задача принята в работу
+    done = "done"  # Задача завершена
+    cancelled = "cancelled"  # Задача отменена
+
+class RecurrenceType(str, enum.Enum):
+    daily = "daily"
+    weekly = "weekly"
+    monthly = "monthly"
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -67,14 +78,24 @@ class Task(Base):
     description = Column(Text)
     project = Column(String, index=True)
     deadline = Column(DateTime)
-    status = Column(Enum(TaskStatus), default=TaskStatus.in_progress)
+    status = Column(Enum(TaskStatus), default=TaskStatus.new)
     task_type = Column(String, nullable=True)
     task_format = Column(String, nullable=True)
     high_priority = Column(Boolean, default=False, nullable=True)
     executor_id = Column(Integer, ForeignKey("users.id"))
     author_id = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=get_local_time_utc5)
+    accepted_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+    resume_count = Column(Integer, default=0)  # Количество возобновлений задачи
+    
+    # Поля для повторяющихся задач
+    is_recurring = Column(Boolean, default=False, nullable=True)  # Является ли задача повторяющейся
+    recurrence_type = Column(Enum(RecurrenceType), nullable=True)  # daily, weekly, monthly
+    recurrence_time = Column(String, nullable=True)  # Время повтора в формате HH:MM
+    recurrence_days = Column(String, nullable=True)  # Дни недели/месяца для повтора (1,2,3,4,5 или 15)
+    next_run_at = Column(DateTime, nullable=True)  # Когда создать следующую копию
+    
 
     executor = relationship(
         "User",
@@ -388,8 +409,10 @@ class EmployeeExpense(Base):
     description = Column(Text, nullable=True)
     date = Column(Date, default=datetime.utcnow().date)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
+
     user = relationship("User", back_populates="expenses")
+    project = relationship("Project")
 
 
 class Setting(Base):
@@ -397,3 +420,151 @@ class Setting(Base):
 
     key = Column(String, primary_key=True)
     value = Column(String, nullable=False)
+
+
+# Модели для канбан-доски заявок
+class LeadStatusEnum(str, enum.Enum):
+    new = "new"  # Новая заявка
+    in_progress = "in_progress"  # Взят в обработку
+    negotiation = "negotiation"  # Созвон / переговоры
+    proposal = "proposal"  # К.П.
+    waiting = "waiting"  # Ожидание ответа
+    success = "success"  # Успешно
+    rejected = "rejected"  # Отказ
+
+
+class Lead(Base):
+    __tablename__ = "leads"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    source = Column(String, nullable=False)  # Источник заявки
+    status = Column(Enum(LeadStatusEnum), default=LeadStatusEnum.new)
+    manager_id = Column(Integer, ForeignKey("users.id"))
+    
+    # Основные поля
+    client_name = Column(String, nullable=True)
+    client_contact = Column(String, nullable=True)
+    company_name = Column(String, nullable=True)  # Название компании клиента
+    description = Column(Text, nullable=True)
+    
+    # Поля для этапа КП
+    proposal_amount = Column(Float, nullable=True)  # Сумма предложения
+    proposal_date = Column(DateTime, nullable=True)
+    
+    # Поля для финального этапа
+    deal_amount = Column(Float, nullable=True)  # Сумма сделки
+    rejection_reason = Column(Text, nullable=True)  # Причина отказа
+    
+    # Даты и таймеры
+    created_at = Column(DateTime, default=get_local_time_utc5)
+    updated_at = Column(DateTime, default=get_local_time_utc5, onupdate=get_local_time_utc5)
+    last_activity_at = Column(DateTime, default=get_local_time_utc5)
+    reminder_date = Column(DateTime, nullable=True)  # Дата напоминания
+    waiting_started_at = Column(DateTime, nullable=True)  # Начало ожидания ответа
+    
+    # Relationships
+    manager = relationship("User", backref="leads")
+    notes = relationship("LeadNote", back_populates="lead", cascade="all, delete-orphan")
+    attachments = relationship("LeadAttachment", back_populates="lead", cascade="all, delete-orphan")
+    history = relationship("LeadHistory", back_populates="lead", cascade="all, delete-orphan")
+
+
+class LeadNote(Base):
+    __tablename__ = "lead_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    content = Column(Text, nullable=False)
+    lead_status = Column(String, nullable=True)  # Статус заявки на момент создания комментария
+    created_at = Column(DateTime, default=get_local_time_utc5)
+    
+    lead = relationship("Lead", back_populates="notes")
+    user = relationship("User")
+
+
+class LeadAttachment(Base):
+    __tablename__ = "lead_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    file_size = Column(Integer, nullable=True)
+    mime_type = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, default=get_local_time_utc5)
+    
+    lead = relationship("Lead", back_populates="attachments")
+    user = relationship("User")
+
+
+class LeadHistory(Base):
+    __tablename__ = "lead_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    action = Column(String, nullable=False)  # Например: status_changed, note_added, file_attached
+    old_value = Column(String, nullable=True)
+    new_value = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=get_local_time_utc5)
+    
+    lead = relationship("Lead", back_populates="history")
+    user = relationship("User")
+
+
+# Модели для интерактивной доски
+class WhiteboardProject(Base):
+    __tablename__ = "whiteboard_projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=get_local_time_utc5)
+    updated_at = Column(DateTime, default=get_local_time_utc5, onupdate=get_local_time_utc5)
+    is_archived = Column(Boolean, default=False)
+    
+    # Relationships
+    creator = relationship("User", backref="created_whiteboard_projects")
+    permissions = relationship("WhiteboardProjectPermission", back_populates="project", cascade="all, delete-orphan")
+    boards = relationship("WhiteboardBoard", back_populates="project", cascade="all, delete-orphan")
+
+
+class WhiteboardProjectPermission(Base):
+    __tablename__ = "whiteboard_project_permissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("whiteboard_projects.id"))
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    can_view = Column(Boolean, default=True)
+    can_edit = Column(Boolean, default=False)
+    can_manage = Column(Boolean, default=False)  # Управление правами доступа
+    created_at = Column(DateTime, default=get_local_time_utc5)
+    
+    # Relationships
+    project = relationship("WhiteboardProject", back_populates="permissions")
+    user = relationship("User", backref="whiteboard_permissions")
+    
+    # Уникальность по проекту и пользователю
+    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+
+
+class WhiteboardBoard(Base):
+    __tablename__ = "whiteboard_boards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("whiteboard_projects.id"))
+    name = Column(String, nullable=False)
+    data = Column(Text, nullable=True)  # JSON данные доски (рисунки, комментарии, стикеры и т.д.)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=get_local_time_utc5)
+    updated_at = Column(DateTime, default=get_local_time_utc5, onupdate=get_local_time_utc5)
+    is_active = Column(Boolean, default=True)
+    
+    # Relationships
+    project = relationship("WhiteboardProject", back_populates="boards")
+    creator = relationship("User", backref="created_whiteboard_boards")

@@ -35,6 +35,10 @@ class TaskBase(BaseModel):
     task_type: Optional[str] = None
     task_format: Optional[str] = None
     high_priority: Optional[bool] = None
+    is_recurring: Optional[bool] = None
+    recurrence_type: Optional[str] = None  # daily, weekly, monthly
+    recurrence_time: Optional[str] = None  # Время повтора в формате HH:MM
+    recurrence_days: Optional[str] = None  # Дни недели для daily/weekly (1,2,3,4,5) или день месяца для monthly (15)
 
 class TaskCreate(TaskBase):
     executor_id: Optional[int] = None
@@ -45,8 +49,18 @@ class Task(TaskBase):
     executor_id: Optional[int]
     author_id: Optional[int]
     created_at: datetime
+    accepted_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+    resume_count: Optional[int] = 0
     high_priority: Optional[bool] = None
+    is_recurring: Optional[bool] = None
+    recurrence_type: Optional[str] = None
+    next_run_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class TaskWithDetails(Task):
+    created_by: Optional[str] = None  # Имя создателя задачи
+    project_name: Optional[str] = None  # Название проекта для отображения
     model_config = ConfigDict(from_attributes=True)
 
 class OperatorBase(BaseModel):
@@ -543,9 +557,10 @@ class ExpenseReport(BaseModel):
 # Employee Expense Schemas
 class EmployeeExpenseBase(BaseModel):
     name: str
-    amount: float  
+    amount: float
     description: Optional[str] = None
     date: Optional[DateType] = None
+    project_id: Optional[int] = None
 
 class EmployeeExpenseCreate(EmployeeExpenseBase):
     pass
@@ -555,13 +570,15 @@ class EmployeeExpenseUpdate(BaseModel):
     amount: Optional[float] = None
     description: Optional[str] = None
     date: Optional[DateType] = None
+    project_id: Optional[int] = None
 
 class EmployeeExpense(EmployeeExpenseBase):
     id: int
-    user_id: int
+    user_id: Optional[int] = None
     created_at: datetime
     date: DateType  # Override the optional date from base class
     user: Optional[User] = None
+    project: Optional["Project"] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -587,3 +604,249 @@ class OperatorExpenseReport(BaseModel):
     price_per_video: Optional[int]
     videos_completed: int
     total_amount: float  # Общая сумма за завершенные видео или зарплата
+
+
+# Схемы для канбан-доски заявок
+class LeadBase(BaseModel):
+    title: str
+    source: str
+    client_name: Optional[str] = None
+    client_contact: Optional[str] = None
+    company_name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class LeadCreate(LeadBase):
+    manager_id: Optional[int] = None
+
+
+class LeadUpdate(BaseModel):
+    title: Optional[str] = None
+    source: Optional[str] = None
+    status: Optional[str] = None
+    manager_id: Optional[int] = None
+    client_name: Optional[str] = None
+    client_contact: Optional[str] = None
+    company_name: Optional[str] = None
+    description: Optional[str] = None
+    proposal_amount: Optional[float] = None
+    proposal_date: Optional[datetime] = None
+    deal_amount: Optional[float] = None
+    rejection_reason: Optional[str] = None
+    reminder_date: Optional[datetime] = None
+    waiting_started_at: Optional[datetime] = None
+
+
+class LeadNoteBase(BaseModel):
+    content: str
+
+
+class LeadNoteCreate(LeadNoteBase):
+    pass
+
+
+class LeadNote(LeadNoteBase):
+    id: int
+    lead_id: int
+    user_id: int
+    lead_status: Optional[str] = None
+    created_at: datetime
+    user: Optional[User] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LeadAttachmentBase(BaseModel):
+    filename: str
+
+
+class LeadAttachment(LeadAttachmentBase):
+    id: int
+    lead_id: int
+    user_id: int
+    file_path: str
+    file_size: Optional[int] = None
+    mime_type: Optional[str] = None
+    uploaded_at: datetime
+    user: Optional[User] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LeadHistoryItem(BaseModel):
+    id: int
+    action: str
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    description: Optional[str] = None
+    created_at: datetime
+    user: Optional[User] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class Lead(LeadBase):
+    id: int
+    status: str
+    manager_id: Optional[int] = None
+    proposal_amount: Optional[float] = None
+    proposal_date: Optional[datetime] = None
+    deal_amount: Optional[float] = None
+    rejection_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    last_activity_at: datetime
+    reminder_date: Optional[datetime] = None
+    waiting_started_at: Optional[datetime] = None
+    
+    manager: Optional[User] = None
+    notes: List[LeadNote] = []
+    attachments: List[LeadAttachment] = []
+    history: List[LeadHistoryItem] = []
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Схемы для аналитики канбан-доски
+class LeadStats(BaseModel):
+    total_leads: int
+    active_leads: int
+    success_leads: int
+    rejected_leads: int
+    conversion_rate: float
+    average_processing_time: int  # В секундах
+    
+    
+class LeadsByStatus(BaseModel):
+    new: int
+    in_progress: int
+    negotiation: int
+    proposal: int
+    waiting: int
+    success: int
+    rejected: int
+
+
+class LeadAnalytics(BaseModel):
+    stats: LeadStats
+    leads_by_status: LeadsByStatus
+    leads_by_source: dict  # source -> count
+    rejection_reasons: dict  # reason -> count
+    top_managers: dict  # manager_name -> successful_deals_count
+
+
+# Схемы для аналитики по типам услуг
+class ServiceTypeData(BaseModel):
+    service_type: str
+    created: int
+    completed: int
+    efficiency: float  # процент завершенных от созданных
+
+class EmployeeServiceAnalytics(BaseModel):
+    employee_id: int
+    employee_name: str
+    service_types: List[ServiceTypeData]
+    total_created: int
+    total_completed: int
+    overall_efficiency: float
+
+class ServiceTypesAnalytics(BaseModel):
+    employees: List[EmployeeServiceAnalytics]
+    period_start: str
+    period_end: str
+    total_service_types: List[str]
+
+
+# Схемы для интерактивной доски
+class WhiteboardProjectPermissionBase(BaseModel):
+    user_id: int
+    can_view: bool = True
+    can_edit: bool = False
+    can_manage: bool = False
+
+
+class WhiteboardProjectPermissionCreate(WhiteboardProjectPermissionBase):
+    pass
+
+
+class WhiteboardProjectPermission(WhiteboardProjectPermissionBase):
+    id: int
+    project_id: int
+    created_at: datetime
+    user: Optional[User] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WhiteboardProjectBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class WhiteboardProjectCreate(WhiteboardProjectBase):
+    permissions: List[WhiteboardProjectPermissionCreate] = []
+
+
+class WhiteboardProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_archived: Optional[bool] = None
+
+
+class WhiteboardProject(WhiteboardProjectBase):
+    id: int
+    created_by: int
+    created_at: datetime
+    updated_at: datetime
+    is_archived: bool = False
+    creator: Optional[User] = None
+    permissions: List[WhiteboardProjectPermission] = []
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WhiteboardBoardBase(BaseModel):
+    name: str
+    data: Optional[str] = None
+
+
+class WhiteboardBoardCreate(WhiteboardBoardBase):
+    project_id: int
+
+
+class WhiteboardBoardUpdate(BaseModel):
+    name: Optional[str] = None
+    data: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class WhiteboardBoard(WhiteboardBoardBase):
+    id: int
+    project_id: int
+    created_by: int
+    created_at: datetime
+    updated_at: datetime
+    is_active: bool = True
+    creator: Optional[User] = None
+    project: Optional[WhiteboardProject] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Схемы для Telegram авторизации
+class TelegramAuthRequest(BaseModel):
+    telegram_id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+
+
+class TelegramAuthResponse(BaseModel):
+    success: bool
+    message: str
+    user: Optional[User] = None
+
+
+class TelegramStatusRequest(BaseModel):
+    telegram_id: Optional[int] = None
+    username: Optional[str] = None
+
+
+class TelegramStatusResponse(BaseModel):
+    has_access: bool
+    user: Optional[User] = None
+    message: str

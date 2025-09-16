@@ -1,9 +1,137 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 
 from . import models, schemas, auth
+from .models import get_local_time_utc5
+
+
+def get_setting(db: Session, key: str, default: str = None) -> Optional[str]:
+    """Получить значение настройки по ключу"""
+    setting = db.query(models.Setting).filter(models.Setting.key == key).first()
+    return setting.value if setting else default
+
+
+def set_setting(db: Session, key: str, value: str):
+    """Установить значение настройки"""
+    setting = db.query(models.Setting).filter(models.Setting.key == key).first()
+    if setting:
+        setting.value = value
+    else:
+        setting = models.Setting(key=key, value=value)
+        db.add(setting)
+    db.commit()
+
+
+def calculate_next_run_at(recurrence_type: str, db: Session = None, generation_time: str = None, recurrence_days: str = None) -> datetime:
+    """Рассчитывает следующее время запуска для повторяющихся задач"""
+    base_date = datetime.now()
+    
+    # Получаем время генерации
+    target_time = generation_time
+    if not target_time and db:
+        target_time = get_setting(db, 'recurring_task_generation_time', '11:19')
+    
+    # Парсим время
+    target_hour, target_minute = 11, 19  # значение по умолчанию
+    if target_time:
+        try:
+            target_hour, target_minute = map(int, target_time.split(':'))
+        except (ValueError, AttributeError):
+            pass
+    
+    # Парсим дни
+    allowed_days = []
+    if recurrence_days:
+        try:
+            allowed_days = [int(d.strip()) for d in recurrence_days.split(',') if d.strip()]
+        except ValueError:
+            pass
+    
+    if recurrence_type == "daily":
+        # Для ежедневных задач учитываем дни недели (1=Понедельник, 7=Воскресенье)
+        current_date = base_date.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+        
+        if allowed_days:
+            # Ищем следующий подходящий день
+            for i in range(7):  # Максимум 7 дней проверяем
+                check_date = current_date + timedelta(days=i)
+                weekday = check_date.isoweekday()  # 1=Monday, 7=Sunday
+                
+                if weekday in allowed_days:
+                    if check_date > base_date:  # Время еще не прошло
+                        return check_date
+        else:
+            # Если дни не указаны, работаем как раньше - каждый день
+            if base_date < current_date:
+                return current_date
+            else:
+                return current_date + timedelta(days=1)
+    
+    elif recurrence_type == "weekly":
+        # Для еженедельных задач тоже учитываем дни недели
+        current_date = base_date.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+        
+        if allowed_days:
+            # Ищем следующий подходящий день в пределах недели
+            for i in range(7):
+                check_date = current_date + timedelta(days=i)
+                weekday = check_date.isoweekday()
+                
+                if weekday in allowed_days and check_date > base_date:
+                    return check_date
+            
+            # Если не найден в этой неделе, ищем в следующей
+            for i in range(7, 14):
+                check_date = current_date + timedelta(days=i)
+                weekday = check_date.isoweekday()
+                
+                if weekday in allowed_days:
+                    return check_date
+        else:
+            # Если дни не указаны, каждую неделю
+            if base_date < current_date:
+                return current_date
+            else:
+                return current_date + timedelta(weeks=1)
+    
+    elif recurrence_type == "monthly":
+        # Для месячных задач учитываем день месяца
+        if allowed_days and len(allowed_days) > 0:
+            target_day = allowed_days[0]  # Берем первый день из списка
+            
+            # Попробуем этот месяц
+            try:
+                current_month_date = base_date.replace(day=target_day, hour=target_hour, minute=target_minute, second=0, microsecond=0)
+                if current_month_date > base_date:
+                    return current_month_date
+            except ValueError:
+                pass  # День не существует в текущем месяце
+            
+            # Попробуем следующий месяц
+            if base_date.month == 12:
+                next_month = base_date.replace(year=base_date.year + 1, month=1)
+            else:
+                next_month = base_date.replace(month=base_date.month + 1)
+            
+            try:
+                next_month_date = next_month.replace(day=target_day, hour=target_hour, minute=target_minute, second=0, microsecond=0)
+                return next_month_date
+            except ValueError:
+                # Если день не существует (например, 31 число в феврале), берем последний день месяца
+                import calendar
+                last_day = calendar.monthrange(next_month.year, next_month.month)[1]
+                return next_month.replace(day=min(target_day, last_day), hour=target_hour, minute=target_minute, second=0, microsecond=0)
+        else:
+            # Если день не указан, каждый месяц в тот же день
+            current_date = base_date.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+            if base_date < current_date:
+                return current_date
+            else:
+                return current_date + timedelta(days=30)
+    
+    return None
 
 
 def get_user(db: Session, user_id: int) -> Optional[models.User]:
@@ -17,8 +145,10 @@ def get_user_by_login(db: Session, login: str) -> Optional[models.User]:
 
 def create_user(db: Session, user: schemas.UserCreate) -> models.User:
     hashed_password = auth.get_password_hash(user.password)
+    # Нормализуем telegram_username к нижнему регистру для корректной работы с Telegram ботом
+    telegram_username = user.telegram_username.lower() if user.telegram_username else None
     db_user = models.User(
-        telegram_username=user.telegram_username,
+        telegram_username=telegram_username,
         name=user.name,
         hashed_password=hashed_password,
         role=user.role,
@@ -61,6 +191,58 @@ def delete_user(db: Session, user_id: int) -> None:
         db.commit()
 
 
+def authorize_telegram_user(db: Session, telegram_id: int, username: Optional[str] = None) -> Optional[models.User]:
+    """Авторизация пользователя Telegram через API (только по @username)"""
+    user = None
+
+    if username:
+        # Сначала ищем по точному совпадению telegram_username
+        user = db.query(models.User).filter(
+            models.User.telegram_username == username.lower(),
+            models.User.is_active == True
+        ).first()
+
+        # Если не найден, ищем case-insensitive
+        if not user:
+            user = db.query(models.User).filter(
+                models.User.telegram_username.ilike(username),
+                models.User.is_active == True
+            ).first()
+
+    # Если пользователь найден по @username - даем доступ
+    if user:
+        # Обновляем telegram_id если он изменился
+        if user.telegram_id != telegram_id:
+            user.telegram_id = telegram_id
+            user.telegram_registered_at = models.get_local_time_utc5()
+            db.commit()
+            db.refresh(user)
+        return user
+
+    return None
+
+
+def check_telegram_user_status(db: Session, telegram_id: Optional[int] = None, username: Optional[str] = None) -> Optional[models.User]:
+    """Проверить текущий статус пользователя в реальном времени (только по @username)"""
+    if not username:
+        return None
+
+    # Поиск только по telegram_username
+    user = db.query(models.User).filter(
+        models.User.telegram_username == username.lower(),
+        models.User.is_active == True
+    ).first()
+
+    # Case-insensitive поиск если точное совпадение не найдено
+    if not user:
+        user = db.query(models.User).filter(
+            models.User.telegram_username.ilike(username),
+            models.User.is_active == True
+        ).first()
+
+    return user
+
+
 def get_operators(db: Session) -> List[models.Operator]:
     return db.query(models.Operator).all()
 
@@ -71,6 +253,8 @@ def create_operator(db: Session, operator: schemas.OperatorCreate) -> models.Ope
         role=operator.role,
         color=operator.color or "#ff0000",
         price_per_video=operator.price_per_video or 0,
+        is_salaried=operator.is_salaried or False,
+        monthly_salary=operator.monthly_salary,
     )
     db.add(op)
     db.commit()
@@ -88,6 +272,10 @@ def update_operator(db: Session, operator_id: int, operator: schemas.OperatorCre
         op.color = operator.color
     if operator.price_per_video is not None:
         op.price_per_video = operator.price_per_video
+    if operator.is_salaried is not None:
+        op.is_salaried = operator.is_salaried
+    if operator.monthly_salary is not None:
+        op.monthly_salary = operator.monthly_salary
     db.commit()
     db.refresh(op)
     return op
@@ -119,8 +307,15 @@ def get_tasks_for_user(db: Session, user: models.User, skip: int = 0, limit: int
     return q.order_by(models.Task.created_at.desc()).offset(skip).limit(limit).all()
 
 
+
 def create_task(db: Session, task: schemas.TaskCreate, author_id: int) -> models.Task:
     deadline = task.deadline
+    
+    # Рассчитываем next_run_at для повторяющихся задач
+    next_run_at = None
+    if task.is_recurring and task.recurrence_type:
+        next_run_at = calculate_next_run_at(task.recurrence_type, db, task.recurrence_time, task.recurrence_days)
+    
     db_task = models.Task(
         title=task.title,
         description=task.description,
@@ -131,12 +326,20 @@ def create_task(db: Session, task: schemas.TaskCreate, author_id: int) -> models
         task_type=task.task_type,
         task_format=task.task_format,
         high_priority=task.high_priority or False,
+        is_recurring=task.is_recurring or False,
+        recurrence_type=task.recurrence_type,
+        recurrence_time=task.recurrence_time,
+        recurrence_days=task.recurrence_days,
+        next_run_at=next_run_at,
         created_at=datetime.utcnow(),
+        status=models.TaskStatus.new,  # Новая задача всегда создается со статусом "new"
     )
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
+    
     return db_task
+
 
 
 def update_task(db: Session, task_id: int, data: schemas.TaskCreate) -> Optional[models.Task]:
@@ -153,6 +356,21 @@ def update_task(db: Session, task_id: int, data: schemas.TaskCreate) -> Optional
     task.task_format = data.task_format
     if data.high_priority is not None:
         task.high_priority = data.high_priority
+    if data.is_recurring is not None:
+        task.is_recurring = data.is_recurring
+    if data.recurrence_type is not None:
+        task.recurrence_type = data.recurrence_type
+    if data.recurrence_time is not None:
+        task.recurrence_time = data.recurrence_time
+    if data.recurrence_days is not None:
+        task.recurrence_days = data.recurrence_days
+        
+        # Пересчитываем next_run_at если изменился тип повторения, время или дни
+        if task.is_recurring and task.recurrence_type:
+            task.next_run_at = calculate_next_run_at(task.recurrence_type, db, task.recurrence_time, task.recurrence_days)
+        else:
+            task.next_run_at = None
+    
     db.commit()
     db.refresh(task)
     return task
@@ -168,11 +386,32 @@ def delete_task(db: Session, task_id: int) -> None:
 def update_task_status(db: Session, task_id: int, status: str):
     task = db.query(models.Task).filter(models.Task.id == task_id).first()
     if task:
-        task.status = status
-        if status == models.TaskStatus.done:
-            task.finished_at = datetime.utcnow()
-        else:
+        old_status = task.status
+
+        # Преобразуем строку в TaskStatus enum
+        if status == "done":
+            task.status = models.TaskStatus.done
+            task.finished_at = get_local_time_utc5()
+        elif status == "cancelled":
+            task.status = models.TaskStatus.cancelled
             task.finished_at = None
+        elif status == "in_progress":
+            task.status = models.TaskStatus.in_progress
+            task.finished_at = None
+            # Увеличиваем счетчик возобновлений если задача была завершена или отменена
+            if old_status in [models.TaskStatus.done, models.TaskStatus.cancelled]:
+                if task.resume_count is None:
+                    task.resume_count = 0
+                task.resume_count += 1
+        else:
+            task.status = models.TaskStatus.in_progress
+            task.finished_at = None
+            # Увеличиваем счетчик возобновлений если задача была завершена или отменена
+            if old_status in [models.TaskStatus.done, models.TaskStatus.cancelled]:
+                if task.resume_count is None:
+                    task.resume_count = 0
+                task.resume_count += 1
+
         db.commit()
         db.refresh(task)
     return task
@@ -1253,3 +1492,809 @@ def get_user_statistics(db: Session, user_id: int) -> Optional[schemas.UserStats
         recent_tasks=recent_tasks,
         productivity=productivity
     )
+
+
+# =============================================================================
+# CRUD для канбан-доски заявок
+# =============================================================================
+
+def get_leads(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    manager_id: Optional[int] = None,
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+    created_from: Optional[str] = None,
+    created_to: Optional[str] = None
+):
+    """Получить список заявок с фильтрацией"""
+    query = db.query(models.Lead).options(
+        joinedload(models.Lead.manager),
+        joinedload(models.Lead.notes).joinedload(models.LeadNote.user),
+        joinedload(models.Lead.attachments),
+        joinedload(models.Lead.history).joinedload(models.LeadHistory.user)
+    )
+
+    if manager_id:
+        query = query.filter(models.Lead.manager_id == manager_id)
+    if status:
+        query = query.filter(models.Lead.status == status)
+    if source:
+        query = query.filter(models.Lead.source.ilike(f"%{source}%"))
+    if created_from:
+        from datetime import datetime
+        try:
+            from_date = datetime.strptime(created_from, "%Y-%m-%d")
+            query = query.filter(models.Lead.created_at >= from_date)
+        except ValueError:
+            pass  # Игнорируем некорректные даты
+    if created_to:
+        from datetime import datetime, timedelta
+        try:
+            to_date = datetime.strptime(created_to, "%Y-%m-%d")
+            # Добавляем один день, чтобы включить весь день "до"
+            to_date = to_date + timedelta(days=1)
+            query = query.filter(models.Lead.created_at < to_date)
+        except ValueError:
+            pass  # Игнорируем некорректные даты
+
+    return query.order_by(models.Lead.last_activity_at.desc()).offset(skip).limit(limit).all()
+
+
+def get_lead(db: Session, lead_id: int):
+    """Получить заявку по ID"""
+    return db.query(models.Lead).options(
+        joinedload(models.Lead.manager),
+        joinedload(models.Lead.notes).joinedload(models.LeadNote.user),
+        joinedload(models.Lead.attachments),
+        joinedload(models.Lead.history).joinedload(models.LeadHistory.user)
+    ).filter(models.Lead.id == lead_id).first()
+
+
+def create_lead(db: Session, lead: schemas.LeadCreate, creator_id: int):
+    """Создать новую заявку"""
+    db_lead = models.Lead(
+        title=lead.title,
+        source=lead.source,
+        manager_id=lead.manager_id,
+        client_name=lead.client_name,
+        client_contact=lead.client_contact,
+        company_name=lead.company_name,
+        description=lead.description,
+        status=models.LeadStatusEnum.new
+    )
+    
+    db.add(db_lead)
+    db.commit()
+    db.refresh(db_lead)
+    
+    # Добавляем запись в историю
+    _create_lead_history(
+        db=db,
+        lead_id=db_lead.id,
+        user_id=creator_id,
+        action="lead_created",
+        description=f"Заявка '{lead.title}' создана"
+    )
+    
+    return db_lead
+
+
+def update_lead(db: Session, lead_id: int, lead_update: schemas.LeadUpdate, user_id: int):
+    """Обновить заявку"""
+    lead = db.query(models.Lead).filter(models.Lead.id == lead_id).first()
+    if not lead:
+        return None
+    
+    old_status = lead.status
+    
+    # Обновляем поля
+    update_data = lead_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(lead, field, value)
+    
+    # Обновляем время последней активности
+    lead.last_activity_at = models.get_local_time_utc5()
+    
+    # Обрабатываем изменение статуса
+    if hasattr(lead_update, 'status') and lead_update.status and lead_update.status != old_status:
+        if lead_update.status == models.LeadStatusEnum.waiting:
+            lead.waiting_started_at = models.get_local_time_utc5()
+        
+        # Добавляем запись в историю
+        _create_lead_history(
+            db=db,
+            lead_id=lead_id,
+            user_id=user_id,
+            action="status_changed",
+            old_value=old_status,
+            new_value=lead_update.status,
+            description=f"Статус изменен с '{old_status}' на '{lead_update.status}'"
+        )
+    
+    db.commit()
+    db.refresh(lead)
+    return lead
+
+
+def delete_lead(db: Session, lead_id: int):
+    """Удалить заявку"""
+    lead = db.query(models.Lead).filter(models.Lead.id == lead_id).first()
+    if not lead:
+        return False
+    
+    db.delete(lead)
+    db.commit()
+    return True
+
+
+# Заметки к заявкам
+def create_lead_note(db: Session, lead_id: int, note: schemas.LeadNoteCreate, user_id: int):
+    """Создать заметку к заявке"""
+    # Сначала получаем текущий статус заявки
+    lead = db.query(models.Lead).filter(models.Lead.id == lead_id).first()
+    
+    db_note = models.LeadNote(
+        lead_id=lead_id,
+        user_id=user_id,
+        content=note.content,
+        lead_status=lead.status if lead else None  # Сохраняем текущий статус
+    )
+    
+    db.add(db_note)
+    
+    # Обновляем время последней активности заявки
+    if lead:
+        lead.last_activity_at = models.get_local_time_utc5()
+    
+    # Добавляем запись в историю
+    _create_lead_history(
+        db=db,
+        lead_id=lead_id,
+        user_id=user_id,
+        action="note_added",
+        description=f"Добавлена заметка: {note.content[:50]}..."
+    )
+    
+    db.commit()
+    db.refresh(db_note)
+    return db_note
+
+
+def delete_lead_note(db: Session, note_id: int, user_id: int):
+    """Удалить заметку (только автор может удалить свою заметку)"""
+    note = db.query(models.LeadNote).filter(
+        models.LeadNote.id == note_id,
+        models.LeadNote.user_id == user_id
+    ).first()
+    
+    if not note:
+        return False
+    
+    lead_id = note.lead_id
+    db.delete(note)
+    
+    # Добавляем запись в историю
+    _create_lead_history(
+        db=db,
+        lead_id=lead_id,
+        user_id=user_id,
+        action="note_deleted",
+        description="Заметка удалена"
+    )
+    
+    db.commit()
+    return True
+
+
+# Файлы к заявкам
+def create_lead_attachment(db: Session, lead_id: int, attachment: dict, user_id: int):
+    """Создать вложение к заявке"""
+    db_attachment = models.LeadAttachment(
+        lead_id=lead_id,
+        user_id=user_id,
+        **attachment
+    )
+    
+    db.add(db_attachment)
+    
+    # Обновляем время последней активности заявки
+    lead = db.query(models.Lead).filter(models.Lead.id == lead_id).first()
+    if lead:
+        lead.last_activity_at = models.get_local_time_utc5()
+    
+    # Добавляем запись в историю
+    _create_lead_history(
+        db=db,
+        lead_id=lead_id,
+        user_id=user_id,
+        action="file_attached",
+        description=f"Прикреплен файл: {attachment['filename']}"
+    )
+    
+    db.commit()
+    db.refresh(db_attachment)
+    return db_attachment
+
+
+def get_lead_attachment(db: Session, attachment_id: int):
+    """Получить вложение по ID"""
+    return db.query(models.LeadAttachment).filter(
+        models.LeadAttachment.id == attachment_id
+    ).first()
+
+
+def delete_lead_attachment(db: Session, attachment_id: int, user_id: int):
+    """Удалить вложение (только автор может удалить свой файл)"""
+    attachment = db.query(models.LeadAttachment).filter(
+        models.LeadAttachment.id == attachment_id,
+        models.LeadAttachment.user_id == user_id
+    ).first()
+    
+    if not attachment:
+        return False
+    
+    lead_id = attachment.lead_id
+    filename = attachment.filename
+    file_path = attachment.file_path
+    
+    db.delete(attachment)
+    
+    # Удаляем файл с диска
+    import os
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    
+    # Добавляем запись в историю
+    _create_lead_history(
+        db=db,
+        lead_id=lead_id,
+        user_id=user_id,
+        action="file_deleted",
+        description=f"Удален файл: {filename}"
+    )
+    
+    db.commit()
+    return True
+
+
+def _create_lead_history(db: Session, lead_id: int, user_id: int, action: str, old_value: str = None, new_value: str = None, description: str = None):
+    """Создать запись в истории заявки"""
+    history = models.LeadHistory(
+        lead_id=lead_id,
+        user_id=user_id,
+        action=action,
+        old_value=old_value,
+        new_value=new_value,
+        description=description
+    )
+    
+    db.add(history)
+    # Не делаем commit здесь, это делается в вызывающей функции
+
+
+def get_leads_analytics(db: Session):
+    """Получить аналитику по заявкам"""
+    from sqlalchemy import func, case
+    from datetime import datetime, timedelta
+    
+    # Общая статистика
+    total_leads = db.query(models.Lead).count()
+    
+    active_leads = db.query(models.Lead).filter(
+        models.Lead.status.in_([
+            models.LeadStatusEnum.new,
+            models.LeadStatusEnum.in_progress,
+            models.LeadStatusEnum.negotiation,
+            models.LeadStatusEnum.proposal,
+            models.LeadStatusEnum.waiting
+        ])
+    ).count()
+    
+    success_leads = db.query(models.Lead).filter(
+        models.Lead.status == models.LeadStatusEnum.success
+    ).count()
+    
+    rejected_leads = db.query(models.Lead).filter(
+        models.Lead.status == models.LeadStatusEnum.rejected
+    ).count()
+    
+    conversion_rate = (success_leads / total_leads * 100) if total_leads > 0 else 0
+    
+    # Среднее время обработки (для завершенных заявок)
+    completed_leads = db.query(models.Lead).filter(
+        models.Lead.status.in_([models.LeadStatusEnum.success, models.LeadStatusEnum.rejected])
+    ).all()
+    
+    if completed_leads:
+        processing_times = []
+        for lead in completed_leads:
+            # Рассчитываем время в секундах для более точного расчета
+            time_diff = (lead.updated_at - lead.created_at).total_seconds()
+            processing_times.append(time_diff)
+        average_processing_time = sum(processing_times) / len(processing_times)
+    else:
+        average_processing_time = 0
+    
+    # Статистика по статусам
+    status_counts = db.query(
+        models.Lead.status,
+        func.count(models.Lead.id)
+    ).group_by(models.Lead.status).all()
+    
+    leads_by_status = {
+        'new': 0,
+        'in_progress': 0,
+        'negotiation': 0,
+        'proposal': 0,
+        'waiting': 0,
+        'success': 0,
+        'rejected': 0
+    }
+    
+    for status, count in status_counts:
+        leads_by_status[status] = count
+    
+    # Статистика по источникам
+    source_counts = db.query(
+        models.Lead.source,
+        func.count(models.Lead.id)
+    ).group_by(models.Lead.source).all()
+    
+    leads_by_source = {source: count for source, count in source_counts}
+    
+    # Причины отказов
+    rejection_reasons = db.query(
+        models.Lead.rejection_reason,
+        func.count(models.Lead.id)
+    ).filter(
+        models.Lead.rejection_reason.isnot(None)
+    ).group_by(models.Lead.rejection_reason).all()
+    
+    rejection_reasons_dict = {reason: count for reason, count in rejection_reasons if reason}
+    
+    # Топ менеджеров по успешным сделкам
+    top_managers = db.query(
+        models.User.name,
+        func.count(models.Lead.id)
+    ).join(
+        models.Lead, models.User.id == models.Lead.manager_id
+    ).filter(
+        models.Lead.status == models.LeadStatusEnum.success
+    ).group_by(models.User.name).order_by(
+        func.count(models.Lead.id).desc()
+    ).limit(5).all()
+    
+    top_managers_dict = {name: count for name, count in top_managers}
+    
+    return schemas.LeadAnalytics(
+        stats=schemas.LeadStats(
+            total_leads=total_leads,
+            active_leads=active_leads,
+            success_leads=success_leads,
+            rejected_leads=rejected_leads,
+            conversion_rate=round(conversion_rate, 1),
+            average_processing_time=int(average_processing_time)
+        ),
+        leads_by_status=schemas.LeadsByStatus(**leads_by_status),
+        leads_by_source=leads_by_source,
+        rejection_reasons=rejection_reasons_dict,
+        top_managers=top_managers_dict
+    )
+
+
+# CRUD операции для интерактивной доски
+
+def get_user_accessible_whiteboard_projects(db: Session, user_id: int, user_role: str) -> List[models.WhiteboardProject]:
+    """Получить проекты доски, доступные пользователю"""
+    # Получаем проекты, где пользователь имеет права доступа или является создателем
+    query = db.query(models.WhiteboardProject).outerjoin(
+        models.WhiteboardProjectPermission,
+        models.WhiteboardProject.id == models.WhiteboardProjectPermission.project_id
+    ).filter(
+        models.WhiteboardProject.is_archived == False,
+        (
+            (models.WhiteboardProjectPermission.user_id == user_id) & 
+            (models.WhiteboardProjectPermission.can_view == True)
+        ) | 
+        (models.WhiteboardProject.created_by == user_id)
+    ).options(
+        joinedload(models.WhiteboardProject.creator),
+        joinedload(models.WhiteboardProject.permissions).joinedload(models.WhiteboardProjectPermission.user)
+    ).distinct()
+    
+    return query.all()
+
+
+def get_whiteboard_project(db: Session, project_id: int) -> Optional[models.WhiteboardProject]:
+    """Получить проект доски по ID"""
+    return db.query(models.WhiteboardProject).options(
+        joinedload(models.WhiteboardProject.creator),
+        joinedload(models.WhiteboardProject.permissions).joinedload(models.WhiteboardProjectPermission.user),
+        joinedload(models.WhiteboardProject.boards)
+    ).filter(models.WhiteboardProject.id == project_id).first()
+
+
+def create_whiteboard_project(db: Session, project: schemas.WhiteboardProjectCreate, creator_id: int, creator_role: str) -> models.WhiteboardProject:
+    """Создать новый проект доски"""
+    db_project = models.WhiteboardProject(
+        name=project.name,
+        created_by=creator_id
+    )
+    
+    db.add(db_project)
+    db.flush()  # Получаем ID проекта
+    
+    # Создаем права доступа для выбранных пользователей
+    for permission in project.permissions:
+        db_permission = models.WhiteboardProjectPermission(
+            project_id=db_project.id,
+            user_id=permission.user_id,
+            can_view=permission.can_view,
+            can_edit=permission.can_edit,
+            can_manage=permission.can_manage
+        )
+        db.add(db_permission)
+    
+    # Создаем основную доску для проекта
+    main_board = models.WhiteboardBoard(
+        project_id=db_project.id,
+        name="Основная доска",
+        created_by=creator_id,
+        data="{}"  # Пустые данные изначально
+    )
+    db.add(main_board)
+    
+    db.commit()
+    db.refresh(db_project)
+    return db_project
+
+
+def update_whiteboard_project(db: Session, project_id: int, project_update: schemas.WhiteboardProjectUpdate) -> Optional[models.WhiteboardProject]:
+    """Обновить проект доски"""
+    db_project = db.query(models.WhiteboardProject).filter(models.WhiteboardProject.id == project_id).first()
+    if not db_project:
+        return None
+    
+    update_data = project_update.model_dump(exclude_unset=True)
+    if update_data:
+        update_data['updated_at'] = get_local_time_utc5()
+        for field, value in update_data.items():
+            setattr(db_project, field, value)
+    
+    db.commit()
+    db.refresh(db_project)
+    return db_project
+
+
+def check_user_whiteboard_permission(db: Session, project_id: int, user_id: int, permission_type: str = "view") -> bool:
+    """Проверить права пользователя на проект доски"""
+    # Проверяем, является ли пользователь создателем проекта
+    project = db.query(models.WhiteboardProject).filter(models.WhiteboardProject.id == project_id).first()
+    if project and project.created_by == user_id:
+        return True  # Создатель имеет все права
+    
+    # Проверяем явные права пользователя
+    permission = db.query(models.WhiteboardProjectPermission).filter(
+        models.WhiteboardProjectPermission.project_id == project_id,
+        models.WhiteboardProjectPermission.user_id == user_id
+    ).first()
+    
+    if not permission:
+        return False
+    
+    if permission_type == "view":
+        return permission.can_view
+    elif permission_type == "edit":
+        return permission.can_edit
+    elif permission_type == "manage":
+        return permission.can_manage
+    
+    return False
+
+
+def get_whiteboard_board(db: Session, board_id: int) -> Optional[models.WhiteboardBoard]:
+    """Получить доску по ID"""
+    return db.query(models.WhiteboardBoard).options(
+        joinedload(models.WhiteboardBoard.project),
+        joinedload(models.WhiteboardBoard.creator)
+    ).filter(models.WhiteboardBoard.id == board_id).first()
+
+
+def update_whiteboard_board_data(db: Session, board_id: int, data: str) -> Optional[models.WhiteboardBoard]:
+    """Обновить данные доски"""
+    db_board = db.query(models.WhiteboardBoard).filter(models.WhiteboardBoard.id == board_id).first()
+    if not db_board:
+        return None
+    
+    db_board.data = data
+    db_board.updated_at = get_local_time_utc5()
+    
+    db.commit()
+    db.refresh(db_board)
+    return db_board
+
+
+def get_all_users(db: Session) -> List[models.User]:
+    """Получить список всех активных пользователей"""
+    return db.query(models.User).filter(models.User.is_active == True).all()
+
+
+def add_user_to_whiteboard_project(db: Session, project_id: int, user_id: int, can_view: bool = True, can_edit: bool = False, can_manage: bool = False) -> Optional[models.WhiteboardProjectPermission]:
+    """Добавить пользователя к проекту доски"""
+    # Проверяем, нет ли уже такого пользователя в проекте
+    existing = db.query(models.WhiteboardProjectPermission).filter(
+        models.WhiteboardProjectPermission.project_id == project_id,
+        models.WhiteboardProjectPermission.user_id == user_id
+    ).first()
+    
+    if existing:
+        return None  # Пользователь уже добавлен
+    
+    permission = models.WhiteboardProjectPermission(
+        project_id=project_id,
+        user_id=user_id,
+        can_view=can_view,
+        can_edit=can_edit,
+        can_manage=can_manage
+    )
+    
+    db.add(permission)
+    db.commit()
+    db.refresh(permission)
+    return permission
+
+
+def remove_user_from_whiteboard_project(db: Session, project_id: int, user_id: int) -> bool:
+    """Удалить пользователя из проекта доски"""
+    permission = db.query(models.WhiteboardProjectPermission).filter(
+        models.WhiteboardProjectPermission.project_id == project_id,
+        models.WhiteboardProjectPermission.user_id == user_id
+    ).first()
+    
+    if permission:
+        db.delete(permission)
+        db.commit()
+        return True
+    
+    return False
+
+
+def update_user_whiteboard_permissions(db: Session, project_id: int, user_id: int, can_view: bool = True, can_edit: bool = False, can_manage: bool = False) -> Optional[models.WhiteboardProjectPermission]:
+    """Обновить права пользователя в проекте доски"""
+    permission = db.query(models.WhiteboardProjectPermission).filter(
+        models.WhiteboardProjectPermission.project_id == project_id,
+        models.WhiteboardProjectPermission.user_id == user_id
+    ).first()
+    
+    if permission:
+        permission.can_view = can_view
+        permission.can_edit = can_edit
+        permission.can_manage = can_manage
+        db.commit()
+        db.refresh(permission)
+        return permission
+    
+    return None
+
+
+def delete_whiteboard_project(db: Session, project_id: int, user_id: int) -> bool:
+    """Удалить проект доски. Может удалить только создатель проекта."""
+    project = db.query(models.WhiteboardProject).filter(models.WhiteboardProject.id == project_id).first()
+    
+    if not project:
+        return False
+    
+    # Проверяем, что пользователь является создателем проекта
+    if project.created_by != user_id:
+        return False
+    
+    try:
+        # Удаляем все связанные boards
+        db.query(models.WhiteboardBoard).filter(models.WhiteboardBoard.project_id == project_id).delete()
+        
+        # Удаляем все permissions
+        db.query(models.WhiteboardProjectPermission).filter(models.WhiteboardProjectPermission.project_id == project_id).delete()
+        
+        # Удаляем сам проект
+        db.delete(project)
+        db.commit()
+        return True
+        
+    except Exception as e:
+        db.rollback()
+        return False
+
+
+# =============================================================================
+# Аналитика по типам услуг
+# =============================================================================
+
+def get_service_types_analytics(
+    db: Session,
+    start_date: str = None,
+    end_date: str = None,
+    employee_id: int = None
+):
+    """Получить аналитику по типам услуг для сотрудников"""
+    from datetime import datetime, timedelta
+    from sqlalchemy import func, and_, or_
+
+    # Определяем период анализа
+    if not start_date:
+        # По умолчанию - текущий месяц
+        now = datetime.now()
+        start_date = now.replace(day=1).strftime('%Y-%m-%d')
+
+    if not end_date:
+        now = datetime.now()
+        end_date = now.strftime('%Y-%m-%d')
+
+    try:
+        start_datetime = datetime.strptime(start_date, '%Y-%m-%d')
+        end_datetime = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+    except ValueError:
+        # Если даты некорректные, используем текущий месяц
+        now = datetime.now()
+        start_datetime = now.replace(day=1)
+        end_datetime = now
+
+    # Получаем всех активных сотрудников или конкретного сотрудника
+    users_query = db.query(models.User).filter(
+        models.User.is_active == True
+    )
+
+    if employee_id:
+        users_query = users_query.filter(models.User.id == employee_id)
+
+    users = users_query.all()
+
+    # Получаем все уникальные типы услуг
+    all_service_types = db.query(models.Task.task_type).filter(
+        models.Task.task_type.isnot(None),
+        models.Task.task_type != ''
+    ).distinct().all()
+    total_service_types = [st[0] for st in all_service_types]
+
+    employees_analytics = []
+
+    for user in users:
+        # Получаем статистику созданных задач (author_id = user.id)
+        created_query = db.query(
+            models.Task.task_type,
+            func.count(models.Task.id).label('created_count')
+        ).filter(
+            models.Task.author_id == user.id,
+            models.Task.created_at >= start_datetime,
+            models.Task.created_at < end_datetime,
+            models.Task.task_type.isnot(None),
+            models.Task.task_type != ''
+        ).group_by(models.Task.task_type)
+
+        created_data = {row.task_type: row.created_count for row in created_query.all()}
+
+        # Получаем статистику назначенных задач (executor_id = user.id - все задачи, назначенные на исполнителя)
+        assigned_query = db.query(
+            models.Task.task_type,
+            func.count(models.Task.id).label('assigned_count')
+        ).filter(
+            models.Task.executor_id == user.id,
+            models.Task.created_at >= start_datetime,
+            models.Task.created_at < end_datetime,
+            models.Task.task_type.isnot(None),
+            models.Task.task_type != ''
+        ).group_by(models.Task.task_type)
+
+        assigned_data = {row.task_type: row.assigned_count for row in assigned_query.all()}
+
+        # Получаем статистику завершенных задач (executor_id = user.id и status = done)
+        completed_query = db.query(
+            models.Task.task_type,
+            func.count(models.Task.id).label('completed_count')
+        ).filter(
+            models.Task.executor_id == user.id,
+            models.Task.status == models.TaskStatus.done,
+            models.Task.created_at >= start_datetime,
+            models.Task.created_at < end_datetime,
+            models.Task.task_type.isnot(None),
+            models.Task.task_type != ''
+        ).group_by(models.Task.task_type)
+
+        completed_data = {row.task_type: row.completed_count for row in completed_query.all()}
+
+        # Объединяем данные по типам услуг
+        service_types_data = []
+        total_created = 0
+        total_completed = 0
+
+        # Получаем все типы услуг, которые есть у этого пользователя (созданные им или назначенные на него)
+        user_service_types = set(created_data.keys()) | set(assigned_data.keys()) | set(completed_data.keys())
+
+        for service_type in user_service_types:
+            created_count = created_data.get(service_type, 0)
+            assigned_count = assigned_data.get(service_type, 0)
+            completed_count = completed_data.get(service_type, 0)
+
+            # Для отображения используем созданные задачи, но если пользователь не создавал задачи,
+            # а только выполняет их, показываем назначенные задачи
+            display_created = created_count if created_count > 0 else assigned_count
+
+            # Рассчитываем эффективность на основе назначенных задач
+            efficiency = (completed_count / assigned_count * 100) if assigned_count > 0 else 0
+
+            service_types_data.append({
+                'service_type': service_type,
+                'created': display_created,
+                'completed': completed_count,
+                'efficiency': round(efficiency, 1)
+            })
+
+            total_created += display_created
+            total_completed += completed_count
+
+        # Рассчитываем общую эффективность сотрудника
+        overall_efficiency = (total_completed / total_created * 100) if total_created > 0 else 0
+
+        # Добавляем данные сотрудника только если у него есть активность
+        if total_created > 0 or total_completed > 0:
+            employees_analytics.append({
+                'employee_id': user.id,
+                'employee_name': user.name,
+                'service_types': service_types_data,
+                'total_created': total_created,
+                'total_completed': total_completed,
+                'overall_efficiency': round(overall_efficiency, 1)
+            })
+
+    return {
+        'employees': employees_analytics,
+        'period_start': start_date,
+        'period_end': end_date,
+        'total_service_types': total_service_types
+    }
+
+
+# =============================================================================
+# Расходы по проектам - агрегированная аналитика
+# =============================================================================
+
+def get_project_expenses_summary(db: Session, project_id: int = None):
+    """Получить сводку расходов по проектам"""
+    from sqlalchemy import func
+
+    # Базовый запрос проектов
+    projects_query = db.query(models.Project)
+    if project_id:
+        projects_query = projects_query.filter(models.Project.id == project_id)
+
+    projects = projects_query.all()
+    project_summaries = []
+
+    for project in projects:
+        # Затраты на проект (из project_expenses)
+        project_costs = db.query(func.sum(models.ProjectExpense.amount)).filter(
+            models.ProjectExpense.project_id == project.id
+        ).scalar() or 0
+
+        # Расходы сотрудников на проект (из employee_expenses с project_id)
+        employee_expenses = db.query(func.sum(models.EmployeeExpense.amount)).filter(
+            models.EmployeeExpense.project_id == project.id
+        ).scalar() or 0
+
+        # Расходы операторов (из calendar событий съемок для проекта)
+        # Пока оставим как 0, так как нужна дополнительная логика для календаря
+        operator_expenses = 0
+
+        total_expenses = project_costs + employee_expenses + operator_expenses
+
+        project_summaries.append({
+            'project_id': project.id,
+            'project_name': project.name,
+            'project_costs': project_costs,
+            'employee_expenses': employee_expenses,
+            'operator_expenses': operator_expenses,
+            'total_expenses': total_expenses
+        })
+
+    return project_summaries

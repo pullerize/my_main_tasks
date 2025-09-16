@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { API_URL } from '../api'
+import { API_URL, authFetch } from '../api'
 
 function Settings() {
   const [timezone, setTimezone] = useState('')
+  const [generationTime, setGenerationTime] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [savingGenerationTime, setSavingGenerationTime] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState(null)
   const [clearing, setClearing] = useState(false)
@@ -18,16 +20,32 @@ function Settings() {
   const fetchSettings = async () => {
     try {
       const token = localStorage.getItem('token')
-      const response = await fetch(`${API_URL}/settings/timezone`, {
+      
+      // Загрузка настройки часового пояса
+      const timezoneResponse = await fetch(`${API_URL}/settings/timezone`, {
         headers: { Authorization: `Bearer ${token}` }
       })
-      if (response.ok) {
-        const data = await response.json()
+      if (timezoneResponse.ok) {
+        const data = await timezoneResponse.json()
         setTimezone(data.value || 'Asia/Tashkent')
+      } else {
+        setTimezone('Asia/Tashkent')
+      }
+
+      // Загрузка времени генерации повторяющихся задач
+      const generationTimeResponse = await fetch(`${API_URL}/api/recurring-tasks/generation-time`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (generationTimeResponse.ok) {
+        const data = await generationTimeResponse.json()
+        setGenerationTime(data.generation_time || '11:19')
+      } else {
+        setGenerationTime('11:19')
       }
     } catch (error) {
       console.error('Error fetching settings:', error)
       setTimezone('Asia/Tashkent')
+      setGenerationTime('11:19')
     } finally {
       setLoading(false)
     }
@@ -55,6 +73,34 @@ function Settings() {
       setSaving(false)
     }
   }
+
+  const saveGenerationTime = async () => {
+    setSavingGenerationTime(true)
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/api/recurring-tasks/generation-time`, {
+        method: 'PUT',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}` 
+        },
+        body: JSON.stringify({ generation_time: generationTime })
+      })
+      if (response.ok) {
+        const data = await response.json()
+        alert(data.message || 'Время генерации повторяющихся задач сохранено')
+      } else {
+        const errorData = await response.json()
+        alert(`Ошибка: ${errorData.detail}`)
+      }
+    } catch (error) {
+      console.error('Error saving generation time:', error)
+      alert('Ошибка сохранения времени генерации')
+    } finally {
+      setSavingGenerationTime(false)
+    }
+  }
+
 
   const handleDatabaseDownload = async () => {
     try {
@@ -232,6 +278,32 @@ function Settings() {
           className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
         >
           {saving ? 'Сохранение...' : 'Сохранить'}
+        </button>
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-6 mb-6">
+        <h3 className="text-lg font-semibold mb-4">Повторяющиеся задачи</h3>
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Время генерации задач (UTC)
+          </label>
+          <input
+            type="time"
+            value={generationTime}
+            onChange={(e) => setGenerationTime(e.target.value)}
+            className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Время в формате 24-часа (например, 11:19). Повторяющиеся задачи будут создаваться каждый день в это время.
+          </p>
+        </div>
+        
+        <button
+          onClick={saveGenerationTime}
+          disabled={savingGenerationTime}
+          className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
+        >
+          {savingGenerationTime ? 'Сохранение...' : 'Сохранить время генерации'}
         </button>
       </div>
 

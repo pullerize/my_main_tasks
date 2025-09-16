@@ -160,9 +160,15 @@ function ProjectDetail() {
         const d = parseUTC(value + 'T00:00:00')
         const sd = startDate ? parseUTC(startDate + 'T00:00:00') : null
         const ed = endDate ? parseUTC(endDate + 'T00:00:00') : null
+        
+        // Добавляем один день к endDate для правильного сравнения
+        // так как endDate - это последний день месяца и посты на этот день должны быть включены
+        const edNextDay = ed ? new Date(ed.getTime() + 24 * 60 * 60 * 1000) : null
+        
         if (sd && d < sd) {
           setMonth(m => (m === 1 ? 12 : m - 1))
-        } else if (ed && d >= ed) {
+        } else if (edNextDay && d >= edNextDay) {
+          // Переключаем на следующий месяц только если дата поста ПОСЛЕ последнего дня месяца
           setMonth(m => (m === 12 ? 1 : m + 1))
         }
         // Removed automatic status update - status should only change when user explicitly changes it
@@ -269,18 +275,26 @@ function ProjectDetail() {
     const d = parseUTC(p.date)
     const sd = startDate ? parseUTC(startDate + 'T00:00:00') : null
     const ed = endDate ? parseUTC(endDate + 'T00:00:00') : null
+    
+    // Добавляем один день к endDate для правильного сравнения
+    const edNextDay = ed ? new Date(ed.getTime() + 24 * 60 * 60 * 1000) : null
+    
     if (sd && d < sd) return false
-    if (ed && d >= ed) return false
+    if (edNextDay && d >= edNextDay) return false
     return true
   })
 
   const recalcPostsCount = async (list?: Post[], dr?: Post[]) => {
     const sd = startDate ? parseUTC(startDate + 'T00:00:00') : null
     const ed = endDate ? parseUTC(endDate + 'T00:00:00') : null
+    
+    // Добавляем один день к endDate для правильного сравнения
+    const edNextDay = ed ? new Date(ed.getTime() + 24 * 60 * 60 * 1000) : null
+    
     const relevant = (list || posts).filter(p => {
       const d = parseUTC(p.date)
       if (sd && d < sd) return false
-      if (ed && d >= ed) return false
+      if (edNextDay && d >= edNextDay) return false
       return true
     })
     const totalExisting = relevant.reduce((sum, p) => sum + p.posts_per_day, 0)
@@ -298,11 +312,19 @@ function ProjectDetail() {
     if (loaded) recalcPostsCount()
   }, [posts, drafts, startDate, endDate, month, loaded])
 
-  const rows = [...filteredPosts, ...drafts].sort((a, b) => {
-    const dateA = a.date ? new Date(a.date).getTime() : 0
-    const dateB = b.date ? new Date(b.date).getTime() : 0
+  // Разделяем посты на те, у которых есть дата, и те, у которых нет
+  const postsWithDate = [...filteredPosts, ...drafts].filter(p => p.date)
+  const postsWithoutDate = [...filteredPosts, ...drafts].filter(p => !p.date)
+  
+  // Сортируем только посты с датой
+  const sortedPostsWithDate = postsWithDate.sort((a, b) => {
+    const dateA = new Date(a.date).getTime()
+    const dateB = new Date(b.date).getTime()
     return dateA - dateB
   })
+  
+  // Объединяем: сначала отсортированные посты с датой, потом посты без даты
+  const rows = [...sortedPostsWithDate, ...postsWithoutDate]
 
   return (
     <div>
@@ -467,12 +489,12 @@ function ProjectDetail() {
                           <option value="carousel">🎠 Карусель</option>
                         </select>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-6 py-4" style={{ minWidth: '220px' }}>
                         <select
                           value={p.status}
                           onChange={e => updatePost(idx, p, 'status', e.target.value)}
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
-                          style={{ color: statusColor }}
+                          style={{ color: statusColor, minWidth: '200px' }}
                         >
                           {(() => {
                             const today = new Date().toISOString().slice(0, 10)

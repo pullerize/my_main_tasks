@@ -18,12 +18,14 @@ interface Task {
   project?: string
   status: string
   created_at: string
+  accepted_at?: string | null
   deadline?: string | null
   executor_id?: number
   author_id?: number
   task_type?: string
   task_format?: string
   finished_at?: string | null
+  resume_count?: number
   high_priority?: boolean
   source?: 'tasks' | 'digital' // Для различения источника задачи
 }
@@ -101,7 +103,7 @@ function EmployeeReport() {
   // Set default date range to include all tasks (2024-2025)
   const [startDate, setStartDate] = useState('2024-01-01')
   const [endDate, setEndDate] = useState('2025-12-31')
-  const [status, setStatus] = useState<'all' | 'in_progress' | 'done'>('all')
+  const [status, setStatus] = useState<'all' | 'new' | 'in_progress' | 'done'>('all')
   const [taskSource, setTaskSource] = useState<'all' | 'tasks' | 'digital' | 'smm'>('all')
 
   const loadData = async () => {
@@ -222,7 +224,8 @@ function EmployeeReport() {
 
   // Apply status filter for display
   const filteredTasks = baseFilteredTasks.filter(t => {
-    if (status === 'in_progress' && (t.status === 'done' || t.status === 'cancelled')) return false
+    if (status === 'new' && t.status !== 'new') return false
+    if (status === 'in_progress' && (t.status === 'done' || t.status === 'cancelled' || t.status === 'new')) return false
     if (status === 'done' && t.status !== 'done') return false
     return true
   }).sort((a,b)=>{
@@ -237,7 +240,8 @@ function EmployeeReport() {
   // Calculate counts from base filtered tasks
   const allTasksCount = baseFilteredTasks.length
   const doneTasksCount = baseFilteredTasks.filter(t => t.status === 'done').length
-  const inProgressTasksCount = baseFilteredTasks.filter(t => t.status !== 'done').length
+  const inProgressTasksCount = baseFilteredTasks.filter(t => t.status === 'in_progress').length
+  const newTasksCount = baseFilteredTasks.filter(t => t.status === 'new').length
 
   const getUserName = (id?: number) => {
     const u = users.find(x => x.id === id)
@@ -474,19 +478,19 @@ function EmployeeReport() {
             </div>
             
             {/* Additional Statistics */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
               <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-sm font-medium text-gray-600">Выполнено задач</div>
-                    <div className="text-2xl font-bold text-green-600 mt-1">
-                      {doneTasksCount}
+                    <div className="text-sm font-medium text-gray-600">Новые задачи</div>
+                    <div className="text-2xl font-bold text-yellow-600 mt-1">
+                      {newTasksCount}
                     </div>
                   </div>
-                  <span className="text-2xl">✅</span>
+                  <span className="text-2xl">🆕</span>
                 </div>
               </div>
-              
+
               <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
                 <div className="flex items-center justify-between">
                   <div>
@@ -496,6 +500,18 @@ function EmployeeReport() {
                     </div>
                   </div>
                   <span className="text-2xl">⏳</span>
+                </div>
+              </div>
+              
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-gray-600">Выполнено задач</div>
+                    <div className="text-2xl font-bold text-green-600 mt-1">
+                      {doneTasksCount}
+                    </div>
+                  </div>
+                  <span className="text-2xl">✅</span>
                 </div>
               </div>
             </div>
@@ -519,6 +535,16 @@ function EmployeeReport() {
                     onClick={() => setStatus('all')}
                   >
                     📊 Все задачи ({allTasksCount})
+                  </button>
+                  <button
+                    className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 ${
+                      status === 'new' 
+                        ? 'bg-yellow-600 text-white shadow-lg transform scale-105' 
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                    onClick={() => setStatus('new')}
+                  >
+                    🆕 Новые ({newTasksCount})
                   </button>
                   <button
                     className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 ${
@@ -556,6 +582,9 @@ function EmployeeReport() {
                     </th>
                     <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">
                       Статус
+                    </th>
+                    <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                      Возобновлений
                     </th>
                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
                       Дата создания
@@ -602,14 +631,31 @@ function EmployeeReport() {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-center">
-                          {t.status === 'done' ? (
+                          {t.status === 'new' ? (
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                              🆕 Новая
+                            </span>
+                          ) : t.status === 'done' ? (
                             <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
                               ✅ Завершено
                             </span>
+                          ) : t.status === 'cancelled' ? (
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                              ❌ Отменено
+                            </span>
                           ) : (
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                               ⏳ В работе
                             </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          {t.resume_count && t.resume_count > 0 ? (
+                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                              🔄 {t.resume_count}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
                           )}
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-900">
@@ -700,12 +746,20 @@ function EmployeeReport() {
                   <div className="space-y-2">
                     <div className="flex items-start">
                       <span className="text-gray-600 font-medium min-w-[120px]">Статус:</span>
-                      {modalTask.status === 'done' ? (
+                      {modalTask.status === 'new' ? (
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                          🆕 Новая
+                        </span>
+                      ) : modalTask.status === 'done' ? (
                         <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
                           ✅ Завершено
                         </span>
+                      ) : modalTask.status === 'cancelled' ? (
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                          ❌ Отменено
+                        </span>
                       ) : (
-                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                           ⏳ В работе
                         </span>
                       )}
@@ -714,6 +768,12 @@ function EmployeeReport() {
                       <span className="text-gray-600 font-medium min-w-[120px]">Создано:</span>
                       <span className="text-gray-900">{formatDateTime(modalTask.created_at)}</span>
                     </div>
+                    {modalTask.accepted_at && (
+                      <div className="flex items-start">
+                        <span className="text-gray-600 font-medium min-w-[120px]">Принято:</span>
+                        <span className="text-gray-900">{formatDeadlineUTC5(modalTask.accepted_at)}</span>
+                      </div>
+                    )}
                     {modalTask.deadline && (
                       <div className="flex items-start">
                         <span className="text-gray-600 font-medium min-w-[120px]">Дедлайн:</span>
@@ -723,7 +783,7 @@ function EmployeeReport() {
                     {modalTask.finished_at && (
                       <div className="flex items-start">
                         <span className="text-gray-600 font-medium min-w-[120px]">Завершено:</span>
-                        <span className="text-gray-900">{formatDateTime(modalTask.finished_at)}</span>
+                        <span className="text-gray-900">{formatDeadlineUTC5(modalTask.finished_at)}</span>
                       </div>
                     )}
                   </div>
@@ -778,6 +838,14 @@ function EmployeeReport() {
                           <span className="text-gray-600 font-medium min-w-[120px]">Источник:</span>
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
                             {modalTask.source === 'digital' ? '💻 Digital' : '📋 Общие задачи'}
+                          </span>
+                        </div>
+                      )}
+                      {modalTask.resume_count !== undefined && modalTask.resume_count > 0 && (
+                        <div className="flex items-start">
+                          <span className="text-gray-600 font-medium min-w-[120px]">Возобновлений:</span>
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                            🔄 {modalTask.resume_count} раз{modalTask.resume_count > 1 ? (modalTask.resume_count > 4 ? '' : 'а') : ''}
                           </span>
                         </div>
                       )}

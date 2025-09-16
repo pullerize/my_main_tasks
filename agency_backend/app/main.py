@@ -1,11 +1,11 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, status
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, status, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import inspect, text, create_engine
 from dotenv import load_dotenv
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time as datetime_time
 from typing import List, Optional
 from sqlalchemy.orm import joinedload
 import os
@@ -14,6 +14,8 @@ import json
 import shutil
 import tempfile
 import re
+import threading
+import time
 
 from . import models, schemas, crud, auth
 from .database import engine, Base, SessionLocal
@@ -247,7 +249,117 @@ def ensure_digital_task_priority_column():
         conn.commit()
 
 
+def ensure_task_columns():
+    """Ensure tasks table has all required columns"""
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        cols = [c["name"] for c in inspector.get_columns("tasks")]
+        
+        # List of columns to add if missing
+        columns_to_add = [
+            ("accepted_at", "DATETIME"),
+            ("finished_at", "DATETIME"),
+            ("is_recurring", "BOOLEAN DEFAULT 0"),
+            ("recurrence_type", "VARCHAR"),
+            ("recurrence_time", "VARCHAR"),
+            ("recurrence_days", "VARCHAR"),
+            ("next_run_at", "DATETIME")
+        ]
+        
+        for col_name, col_type in columns_to_add:
+            if col_name not in cols:
+                conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_type}"))
+                print(f"✅ Added {col_name} column to tasks table")
+        
+        conn.commit()
+
+
+
+
 ensure_digital_task_priority_column()
+ensure_task_columns()
+
+# ========== RECURRING TASKS SCHEDULER ==========
+def recurring_tasks_scheduler():
+    """Планировщик для генерации повторяющихся задач"""
+    import time
+    from datetime import datetime, timedelta
+    
+    while True:
+        try:
+            current_time = datetime.now()
+            print(f"🕐 Recurring tasks check: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Создаем новую сессию базы данных для планировщика
+            db = SessionLocal()
+            try:
+                # Проверяем все повторяющиеся задачи для отладки
+                all_recurring = db.query(models.Task).filter(models.Task.is_recurring == True).all()
+                print(f"🔍 Found {len(all_recurring)} recurring tasks:")
+                for task in all_recurring:
+                    print(f"   Task: {task.title}, Next run: {task.next_run_at}, Current: {current_time}")
+                    print(f"   Comparison: {task.next_run_at} <= {current_time} = {task.next_run_at <= current_time if task.next_run_at else 'None'}")
+                
+                # Находим задачи, которые нужно повторить
+                # Используем datetime объекты для правильного сравнения
+                due_tasks = db.query(models.Task).filter(
+                    models.Task.is_recurring == True,
+                    models.Task.next_run_at <= current_time
+                ).all()
+                print(f"🔍 Query filter: next_run_at <= '{current_time}'")
+                
+                for template_task in due_tasks:
+                    print(f"🔄 Generating recurring task: {template_task.title}")
+                    
+                    # Создаем копию задачи (теперь тоже повторяющуюся!)
+                    new_task = models.Task(
+                        title=template_task.title,
+                        description=template_task.description,
+                        project=template_task.project,
+                        deadline=template_task.deadline,
+                        executor_id=template_task.executor_id,
+                        author_id=template_task.author_id,
+                        task_type=template_task.task_type,
+                        task_format=template_task.task_format,
+                        high_priority=template_task.high_priority,
+                        created_at=models.get_local_time_utc5(),
+                        status=models.TaskStatus.new,
+                        is_recurring=template_task.is_recurring,  # Копии тоже повторяющиеся
+                        recurrence_type=template_task.recurrence_type,
+                        recurrence_time=template_task.recurrence_time,
+                        recurrence_days=template_task.recurrence_days,
+                        next_run_at=crud.calculate_next_run_at(template_task.recurrence_type.value, db, template_task.recurrence_time, template_task.recurrence_days)
+                    )
+                    
+                    db.add(new_task)
+                    
+                    # Обновляем next_run_at для следующего повтора шаблона
+                    template_task.next_run_at = crud.calculate_next_run_at(template_task.recurrence_type.value, db, template_task.recurrence_time, template_task.recurrence_days)
+                    
+                    print(f"✅ Created recurring task: {template_task.title}, next run: {template_task.next_run_at}")
+                
+                if due_tasks:
+                    db.commit()
+                    print(f"📝 Generated {len(due_tasks)} recurring tasks")
+                else:
+                    print("📭 No recurring tasks due")
+                    
+            except Exception as e:
+                print(f"❌ Error in recurring tasks scheduler: {e}")
+                db.rollback()
+            finally:
+                db.close()
+                
+        except Exception as e:
+            print(f"❌ Critical error in scheduler: {e}")
+        
+        # Проверяем каждые 5 минут
+        time.sleep(30)  # Ждем 30 секунд до следующей проверки (для тестирования)
+
+# Запуск планировщика повторяющихся задач в фоновом потоке
+scheduler_thread = threading.Thread(target=recurring_tasks_scheduler, daemon=True)
+scheduler_thread.start()
+print("🚀 Recurring tasks scheduler started")
 
 
 def create_default_admin():
@@ -391,15 +503,16 @@ except Exception as e:
     print(f"Warning: Could not mount static directory: {e}")
 
 # Configure CORS properly
-cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000")
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:3000")
 allowed_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
     max_age=3600,
 )
 
@@ -555,9 +668,61 @@ def delete_contract(
     return {"ok": True}
 
 
+# Telegram авторизация
+@app.post("/auth/telegram", response_model=schemas.TelegramAuthResponse)
+def authorize_telegram_user(
+    request: schemas.TelegramAuthRequest,
+    db: Session = Depends(auth.get_db)
+):
+    """API endpoint для авторизации пользователей Telegram бота"""
+
+    # Ищем пользователя по username
+    user = crud.authorize_telegram_user(db, request.telegram_id, request.username)
+
+    if user:
+        return schemas.TelegramAuthResponse(
+            success=True,
+            message=f"Пользователь {user.name} успешно авторизован в Telegram боте с ролью {user.role}",
+            user=user
+        )
+    else:
+        return schemas.TelegramAuthResponse(
+            success=False,
+            message=f"Пользователь с @username '{request.username}' не найден в системе. Обратитесь к администратору для добавления вашего username в веб-приложение.",
+            user=None
+        )
+
+
+@app.post("/telegram/status", response_model=schemas.TelegramStatusResponse)
+def check_telegram_user_status(
+    request: schemas.TelegramStatusRequest,
+    db: Session = Depends(auth.get_db)
+):
+    """API endpoint для проверки статуса доступа пользователя в реальном времени"""
+
+    user = crud.check_telegram_user_status(db, request.telegram_id, request.username)
+
+    if user:
+        return schemas.TelegramStatusResponse(
+            has_access=True,
+            user=user,
+            message=f"Пользователь {user.name} имеет доступ к боту с ролью {user.role}"
+        )
+    else:
+        return schemas.TelegramStatusResponse(
+            has_access=False,
+            user=None,
+            message="Доступ к боту отсутствует. Обратитесь к администратору."
+        )
+
+
 @app.get("/tasks/")
 def read_tasks(skip: int = 0, limit: int = 10000, db: Session = Depends(auth.get_db), current: models.User = Depends(auth.get_current_active_user)):
     return crud.get_tasks_for_user(db, current, skip=skip, limit=limit)
+
+
+
+
 
 
 @app.get("/tasks/all", response_model=list[schemas.Task])
@@ -609,10 +774,37 @@ def delete_task(task_id: int, db: Session = Depends(auth.get_db), current: model
     return {"ok": True}
 
 
+@app.patch("/tasks/{task_id}/accept", response_model=schemas.Task)
+def accept_task(
+    task_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_active_user),
+):
+    """Принять задачу в работу (изменить статус с 'new' на 'in_progress')"""
+    task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Проверяем, что задача назначена текущему пользователю
+    if task.executor_id != current.id and current.role != models.RoleEnum.admin:
+        raise HTTPException(status_code=403, detail="You can only accept tasks assigned to you")
+    
+    # Проверяем, что задача имеет статус "new"
+    if task.status != models.TaskStatus.new:
+        raise HTTPException(status_code=400, detail="Task is already accepted or completed")
+    
+    # Меняем статус на "in_progress" и сохраняем время принятия
+    task.status = models.TaskStatus.in_progress
+    task.accepted_at = models.get_local_time_utc5()
+    db.commit()
+    db.refresh(task)
+    return task
+
+
 @app.patch("/tasks/{task_id}/status", response_model=schemas.Task)
 def update_task_status(
     task_id: int,
-    status: str,
+    status: str = Query(..., description="New status for the task"),
     db: Session = Depends(auth.get_db),
     current: models.User = Depends(auth.get_current_active_user),
 ):
@@ -647,6 +839,48 @@ def update_task_status(
         raise HTTPException(status_code=403, detail=f"Not allowed to modify this task. User {current.id} cannot modify task {task_id} (author: {task.author_id}, executor: {task.executor_id})")
     
     return crud.update_task_status(db, task_id, status)
+
+
+@app.patch("/tasks/{task_id}/priority", response_model=schemas.Task)
+def update_task_priority(
+    task_id: int,
+    high_priority: bool = Body(..., embed=True),
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_active_user),
+):
+    """Обновить приоритет задачи"""
+    task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Проверяем права на изменение приоритета задачи
+    can_modify = False
+    
+    # Администраторы могут изменять любые задачи
+    if current.role == models.RoleEnum.admin:
+        can_modify = True
+    # SMM менеджеры могут изменять задачи назначенные дизайнерам, SMM менеджерам и диджитал
+    elif current.role == models.RoleEnum.smm_manager:
+        if task.executor_id:
+            executor = db.query(models.User).filter(models.User.id == task.executor_id).first()
+            if executor and executor.role in [models.RoleEnum.designer, models.RoleEnum.smm_manager, models.RoleEnum.digital]:
+                can_modify = True
+        # Также SMM менеджеры могут изменять созданные ими задачи
+        if task.author_id == current.id:
+            can_modify = True
+    # Остальные могут изменять только назначенные им задачи или созданные ими
+    else:
+        if task.executor_id == current.id or task.author_id == current.id:
+            can_modify = True
+    
+    if not can_modify:
+        raise HTTPException(status_code=403, detail="Not allowed to modify this task priority")
+    
+    # Обновляем приоритет
+    task.high_priority = high_priority
+    db.commit()
+    db.refresh(task)
+    return task
 
 
 @app.get("/operators/", response_model=list[schemas.Operator])
@@ -2458,20 +2692,36 @@ async def clear_database(
                         pass
             db.query(models.ResourceFile).delete()
         
-        # Удаляем операторов
+        # Удаляем операторов (используем прямой SQL для избежания проблем с кэшированием метаданных)
         if hasattr(models, 'Operator'):
-            deleted_counts["operators"] = db.query(models.Operator).count()
-            db.query(models.Operator).delete()
+            try:
+                deleted_counts["operators"] = db.query(models.Operator).count()
+                db.query(models.Operator).delete()
+            except Exception as e:
+                # Если возникла ошибка с метаданными, используем прямой SQL
+                result = db.execute(text("SELECT COUNT(*) FROM operators"))
+                deleted_counts["operators"] = result.scalar()
+                db.execute(text("DELETE FROM operators"))
         
         # Удаляем категории расходов
         if hasattr(models, 'ExpenseCategory'):
-            deleted_counts["expense_categories"] = db.query(models.ExpenseCategory).count()
-            db.query(models.ExpenseCategory).delete()
+            try:
+                deleted_counts["expense_categories"] = db.query(models.ExpenseCategory).count()
+                db.query(models.ExpenseCategory).delete()
+            except Exception as e:
+                result = db.execute(text("SELECT COUNT(*) FROM expense_categories"))
+                deleted_counts["expense_categories"] = result.scalar()
+                db.execute(text("DELETE FROM expense_categories"))
         
         # Удаляем общие расходы
         if hasattr(models, 'CommonExpense'):
-            deleted_counts["common_expenses"] = db.query(models.CommonExpense).count()
-            db.query(models.CommonExpense).delete()
+            try:
+                deleted_counts["common_expenses"] = db.query(models.CommonExpense).count()
+                db.query(models.CommonExpense).delete()
+            except Exception as e:
+                result = db.execute(text("SELECT COUNT(*) FROM common_expenses"))
+                deleted_counts["common_expenses"] = result.scalar()
+                db.execute(text("DELETE FROM common_expenses"))
         
         # Удаляем налоги
         if hasattr(models, 'Tax'):
@@ -2485,7 +2735,9 @@ async def clear_database(
         
         # Удаляем настройки (кроме timezone)
         if hasattr(models, 'Setting'):
-            db.query(models.Setting).filter(models.Setting.key != "timezone").delete()
+            db.query(models.Setting).filter(
+                models.Setting.key.notin_(["timezone"])
+            ).delete()
         
         # Сохраняем изменения
         db.commit()
@@ -3143,20 +3395,24 @@ def get_employee_expenses(
     current: models.User = Depends(auth.get_current_active_user)
 ):
     """Get employee expenses with filters"""
-    query = db.query(models.EmployeeExpense)
-    
+    from sqlalchemy.orm import joinedload
+
+    query = db.query(models.EmployeeExpense).options(
+        joinedload(models.EmployeeExpense.project)
+    )
+
     if user_id:
         query = query.filter(models.EmployeeExpense.user_id == user_id)
     else:
         # If not admin, show only own expenses
         if current.role != models.RoleEnum.admin:
             query = query.filter(models.EmployeeExpense.user_id == current.id)
-    
+
     if start_date:
         query = query.filter(models.EmployeeExpense.date >= start_date)
     if end_date:
         query = query.filter(models.EmployeeExpense.date <= end_date)
-    
+
     return query.all()
 
 
@@ -3383,6 +3639,17 @@ def get_operator_expense_report(
     return reports
 
 
+# ========== PROJECT EXPENSES SUMMARY ==========
+@app.get("/expense-reports/projects")
+def get_project_expenses_summary(
+    project_id: Optional[int] = Query(None, description="Filter by project ID"),
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_active_user)
+):
+    """Get project expenses summary including all types of expenses per project"""
+    return crud.get_project_expenses_summary(db, project_id)
+
+
 # ========== UPDATE OPERATOR ENDPOINT ==========
 @app.put("/operators/{operator_id}", response_model=schemas.Operator)
 def update_operator(
@@ -3402,3 +3669,510 @@ def update_operator(
     db.commit()
     db.refresh(operator)
     return operator
+
+
+# ========== SETTINGS ENDPOINTS ==========
+@app.get("/api/settings/{key}")
+async def get_setting(key: str, db: Session = Depends(get_db)):
+    """Получить настройку"""
+    setting = db.query(models.Setting).filter(models.Setting.key == key).first()
+    if not setting:
+        raise HTTPException(status_code=404, detail="Setting not found")
+    return {"key": setting.key, "value": setting.value}
+
+@app.put("/api/settings/{key}")
+async def update_setting(key: str, value: str = Form(...), db: Session = Depends(get_db)):
+    """Обновить настройку"""
+    setting = db.query(models.Setting).filter(models.Setting.key == key).first()
+    if not setting:
+        setting = models.Setting(key=key, value=value)
+        db.add(setting)
+    else:
+        setting.value = value
+    db.commit()
+    return {"key": key, "value": value}
+
+@app.get("/api/settings")
+async def get_all_settings(db: Session = Depends(get_db)):
+    """Получить все настройки"""
+    settings = db.query(models.Setting).all()
+    return {setting.key: setting.value for setting in settings}
+
+
+# ========== RECURRING TASKS SETTINGS ==========
+@app.get("/api/recurring-tasks/generation-time")
+def get_recurring_task_generation_time(
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_active_user)
+):
+    """Получить время генерации повторяющихся задач"""
+    generation_time = crud.get_setting(db, 'recurring_task_generation_time', '11:19')
+    return {"generation_time": generation_time}
+
+
+@app.put("/api/recurring-tasks/generation-time")
+def set_recurring_task_generation_time(
+    generation_time: str = Body(..., embed=True),
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_admin_user)
+):
+    """Установить время генерации повторяющихся задач (только для админов)"""
+    import re
+    # Валидация времени в формате HH:MM
+    if not re.match(r'^([01]?[0-9]|2[0-3]):[0-5][0-9]$', generation_time):
+        raise HTTPException(status_code=400, detail="Invalid time format. Use HH:MM format (e.g., 11:19)")
+    
+    crud.set_setting(db, 'recurring_task_generation_time', generation_time)
+    return {
+        "generation_time": generation_time,
+        "message": f"Время генерации повторяющихся задач установлено на {generation_time}"
+    }
+
+
+# =============================================================================
+# Канбан-доска заявок (CRM)
+# =============================================================================
+
+@app.get("/leads/", response_model=List[schemas.Lead])
+def get_leads(
+    skip: int = 0,
+    limit: int = 100,
+    manager_id: Optional[int] = None,
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+    created_from: Optional[str] = None,
+    created_to: Optional[str] = None,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Получить список заявок с фильтрацией"""
+    leads = crud.get_leads(
+        db=db,
+        skip=skip,
+        limit=limit,
+        manager_id=manager_id,
+        status=status,
+        source=source,
+        created_from=created_from,
+        created_to=created_to
+    )
+    return leads
+
+
+@app.post("/leads/", response_model=schemas.Lead)
+def create_lead(
+    lead: schemas.LeadCreate,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Создать новую заявку"""
+    # Если менеджер не указан, назначаем текущего пользователя
+    if not lead.manager_id:
+        lead.manager_id = current.id
+    
+    db_lead = crud.create_lead(db=db, lead=lead, creator_id=current.id)
+    return db_lead
+
+
+@app.get("/leads/{lead_id}", response_model=schemas.Lead)
+def get_lead(
+    lead_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Получить заявку по ID"""
+    lead = crud.get_lead(db, lead_id=lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return lead
+
+
+@app.put("/leads/{lead_id}", response_model=schemas.Lead)
+def update_lead(
+    lead_id: int,
+    lead_update: schemas.LeadUpdate,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Обновить заявку"""
+    lead = crud.update_lead(db=db, lead_id=lead_id, lead_update=lead_update, user_id=current.id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return lead
+
+
+@app.delete("/leads/{lead_id}")
+def delete_lead(
+    lead_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_admin_user)
+):
+    """Удалить заявку (только админы)"""
+    success = crud.delete_lead(db=db, lead_id=lead_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return {"message": "Lead deleted successfully"}
+
+
+# Заметки к заявкам
+@app.post("/leads/{lead_id}/notes/", response_model=schemas.LeadNote)
+def add_lead_note(
+    lead_id: int,
+    note: schemas.LeadNoteCreate,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Добавить заметку к заявке"""
+    db_note = crud.create_lead_note(db=db, lead_id=lead_id, note=note, user_id=current.id)
+    return db_note
+
+
+@app.delete("/leads/notes/{note_id}")
+def delete_lead_note(
+    note_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Удалить заметку"""
+    success = crud.delete_lead_note(db=db, note_id=note_id, user_id=current.id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Note not found or access denied")
+    return {"message": "Note deleted successfully"}
+
+
+# Файлы к заявкам
+@app.post("/leads/{lead_id}/attachments/")
+def upload_lead_attachment(
+    lead_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Загрузить файл к заявке"""
+    # Проверяем существование заявки
+    lead = crud.get_lead(db, lead_id=lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    # Создаем папку для файлов заявок
+    upload_dir = "uploads/leads"
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    # Генерируем уникальное имя файла
+    file_extension = os.path.splitext(file.filename)[1] if file.filename else ""
+    safe_filename = f"lead_{lead_id}_{int(time.time())}{file_extension}"
+    file_path = os.path.join(upload_dir, safe_filename)
+    
+    # Сохраняем файл
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Создаем запись в базе данных
+    attachment_data = {
+        "filename": file.filename or safe_filename,
+        "file_path": file_path,
+        "file_size": os.path.getsize(file_path),
+        "mime_type": file.content_type
+    }
+    
+    db_attachment = crud.create_lead_attachment(
+        db=db,
+        lead_id=lead_id,
+        attachment=attachment_data,
+        user_id=current.id
+    )
+    
+    return db_attachment
+
+
+@app.get("/leads/attachments/{attachment_id}/download")
+def download_lead_attachment(
+    attachment_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Скачать файл заявки"""
+    attachment = crud.get_lead_attachment(db, attachment_id=attachment_id)
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    
+    if not os.path.exists(attachment.file_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    
+    return FileResponse(
+        path=attachment.file_path,
+        filename=attachment.filename,
+        media_type=attachment.mime_type or 'application/octet-stream'
+    )
+
+
+@app.delete("/leads/attachments/{attachment_id}")
+def delete_lead_attachment(
+    attachment_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Удалить файл заявки"""
+    success = crud.delete_lead_attachment(db=db, attachment_id=attachment_id, user_id=current.id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Attachment not found or access denied")
+    return {"message": "Attachment deleted successfully"}
+
+
+# Аналитика канбан-доски
+@app.get("/leads/analytics/", response_model=schemas.LeadAnalytics)
+def get_leads_analytics(
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Получить аналитику по заявкам"""
+    analytics = crud.get_leads_analytics(db=db)
+    return analytics
+
+
+@app.get("/analytics/service-types", response_model=schemas.ServiceTypesAnalytics)
+def get_service_types_analytics(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    employee_id: Optional[int] = None,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Получить аналитику по типам услуг для сотрудников"""
+    analytics = crud.get_service_types_analytics(
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
+        employee_id=employee_id
+    )
+    return analytics
+
+
+# =============================================================================
+# Интерактивная доска (Whiteboard)
+# =============================================================================
+
+@app.get("/whiteboard/projects/", response_model=List[schemas.WhiteboardProject])
+def get_whiteboard_projects(
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Получить проекты интерактивной доски, доступные пользователю"""
+    projects = crud.get_user_accessible_whiteboard_projects(
+        db=db, 
+        user_id=current.id, 
+        user_role=current.role
+    )
+    return projects
+
+
+@app.get("/whiteboard/projects/{project_id}", response_model=schemas.WhiteboardProject)
+def get_whiteboard_project(
+    project_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Получить конкретный проект интерактивной доски"""
+    # Проверяем права доступа
+    if not crud.check_user_whiteboard_permission(db, project_id, current.id, "view"):
+        raise HTTPException(status_code=403, detail="Нет доступа к этому проекту")
+    
+    project = crud.get_whiteboard_project(db, project_id=project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    
+    return project
+
+
+@app.post("/whiteboard/projects/", response_model=schemas.WhiteboardProject)
+def create_whiteboard_project(
+    project: schemas.WhiteboardProjectCreate,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Создать новый проект интерактивной доски"""
+    # Проверяем, что все указанные пользователи существуют
+    for permission in project.permissions:
+        user = db.query(models.User).filter(models.User.id == permission.user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Пользователь с ID {permission.user_id} не найден"
+            )
+    
+    db_project = crud.create_whiteboard_project(
+        db=db, 
+        project=project, 
+        creator_id=current.id, 
+        creator_role=current.role
+    )
+    return db_project
+
+
+@app.put("/whiteboard/projects/{project_id}", response_model=schemas.WhiteboardProject)
+def update_whiteboard_project(
+    project_id: int,
+    project_update: schemas.WhiteboardProjectUpdate,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Обновить проект интерактивной доски"""
+    # Проверяем права на управление
+    if not crud.check_user_whiteboard_permission(db, project_id, current.id, "manage"):
+        raise HTTPException(status_code=403, detail="Нет прав на управление этим проектом")
+    
+    project = crud.update_whiteboard_project(db, project_id=project_id, project_update=project_update)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    
+    return project
+
+
+@app.get("/whiteboard/projects/{project_id}/boards/{board_id}", response_model=schemas.WhiteboardBoard)
+def get_whiteboard_board(
+    project_id: int,
+    board_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Получить доску проекта"""
+    # Проверяем права доступа к проекту
+    if not crud.check_user_whiteboard_permission(db, project_id, current.id, "view"):
+        raise HTTPException(status_code=403, detail="Нет доступа к этому проекту")
+    
+    board = crud.get_whiteboard_board(db, board_id=board_id)
+    if not board or board.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Доска не найдена")
+    
+    return board
+
+
+@app.put("/whiteboard/projects/{project_id}/boards/{board_id}/data")
+def update_whiteboard_board_data(
+    project_id: int,
+    board_id: int,
+    data: str = Body(..., embed=True),
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Обновить данные доски"""
+    # Проверяем права на редактирование
+    if not crud.check_user_whiteboard_permission(db, project_id, current.id, "edit"):
+        raise HTTPException(status_code=403, detail="Нет прав на редактирование этого проекта")
+    
+    board = crud.update_whiteboard_board_data(db, board_id=board_id, data=data)
+    if not board or board.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Доска не найдена")
+    
+    return {"message": "Данные доски обновлены", "updated_at": board.updated_at}
+
+
+@app.get("/whiteboard/users", response_model=List[schemas.User])
+def get_whiteboard_users(
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Получить список всех пользователей для назначения прав доступа"""
+    users = crud.get_all_users(db)
+    return users
+
+
+@app.post("/whiteboard/projects/{project_id}/users/{user_id}")
+def add_user_to_whiteboard_project(
+    project_id: int,
+    user_id: int,
+    permissions: schemas.WhiteboardProjectPermissionCreate,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Добавить пользователя к проекту доски"""
+    # Проверяем права на управление
+    if not crud.check_user_whiteboard_permission(db, project_id, current.id, "manage"):
+        raise HTTPException(status_code=403, detail="Нет прав на управление этим проектом")
+    
+    # Проверяем, что пользователь существует
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    permission = crud.add_user_to_whiteboard_project(
+        db, project_id, user_id, 
+        permissions.can_view, permissions.can_edit, permissions.can_manage
+    )
+    
+    if not permission:
+        raise HTTPException(status_code=400, detail="Пользователь уже добавлен к проекту")
+    
+    return {"message": "Пользователь добавлен к проекту", "permission": permission}
+
+
+@app.delete("/whiteboard/projects/{project_id}/users/{user_id}")
+def remove_user_from_whiteboard_project(
+    project_id: int,
+    user_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Удалить пользователя из проекта доски"""
+    # Проверяем права на управление
+    if not crud.check_user_whiteboard_permission(db, project_id, current.id, "manage"):
+        raise HTTPException(status_code=403, detail="Нет прав на управление этим проектом")
+    
+    # Нельзя удалить создателя проекта
+    project = crud.get_whiteboard_project(db, project_id)
+    if project and project.created_by == user_id:
+        raise HTTPException(status_code=400, detail="Нельзя удалить создателя проекта")
+    
+    success = crud.remove_user_from_whiteboard_project(db, project_id, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Пользователь не найден в проекте")
+    
+    return {"message": "Пользователь удален из проекта"}
+
+
+@app.delete("/whiteboard/projects/{project_id}")
+def delete_whiteboard_project(
+    project_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Удалить проект доски. Может удалить только создатель проекта."""
+    success = crud.delete_whiteboard_project(db, project_id, current.id)
+    if not success:
+        # Проверяем, существует ли проект
+        project = crud.get_whiteboard_project(db, project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Проект не найден")
+        else:
+            raise HTTPException(status_code=403, detail="Только создатель проекта может его удалить")
+    
+    return {"message": "Проект доски удален"}
+
+
+@app.put("/whiteboard/projects/{project_id}/users/{user_id}")
+def update_user_whiteboard_permissions(
+    project_id: int,
+    user_id: int,
+    permissions: schemas.WhiteboardProjectPermissionCreate,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Обновить права пользователя в проекте доски"""
+    # Проверяем права на управление
+    if not crud.check_user_whiteboard_permission(db, project_id, current.id, "manage"):
+        raise HTTPException(status_code=403, detail="Нет прав на управление этим проектом")
+    
+    permission = crud.update_user_whiteboard_permissions(
+        db, project_id, user_id,
+        permissions.can_view, permissions.can_edit, permissions.can_manage
+    )
+    
+    if not permission:
+        raise HTTPException(status_code=404, detail="Пользователь не найден в проекте")
+    
+    return {"message": "Права пользователя обновлены", "permission": permission}
+
+
+
+
+

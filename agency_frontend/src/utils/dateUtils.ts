@@ -16,30 +16,32 @@ export const getCurrentDateUTC5 = (): string => {
   return utc5Date.toISOString().split('T')[0];
 };
 
-// Отформатировать дату в короткий формат ДД.ММ.ГГГГ
+// Отформатировать дату в короткий формат ДД.ММ.ГГГГ с добавлением 5 часов
 export const formatDateShortUTC5 = (isoString: string): string => {
   if (!isoString) return '';
   try {
     const date = new Date(isoString);
-    const day = date.getDate().toString().padStart(2, '0');
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const year = date.getFullYear();
+    const utc5Date = new Date(date.getTime() + 5 * 60 * 60 * 1000); // +5 часов
+    const day = utc5Date.getDate().toString().padStart(2, '0');
+    const month = (utc5Date.getMonth() + 1).toString().padStart(2, '0');
+    const year = utc5Date.getFullYear();
     return `${day}.${month}.${year}`;
   } catch (error) {
     return '';
   }
 };
 
-// Отформатировать дату в полный формат ДД.ММ.ГГГГ ЧЧ:ММ
+// Отформатировать дату в полный формат ДД.ММ.ГГГГ ЧЧ:ММ с добавлением 5 часов
 export const formatDateUTC5 = (isoString: string): string => {
   if (!isoString) return '';
   try {
     const date = new Date(isoString);
-    const day = date.getDate().toString().padStart(2, '0');
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const year = date.getFullYear();
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
+    const utc5Date = new Date(date.getTime() + 5 * 60 * 60 * 1000); // +5 часов
+    const day = utc5Date.getDate().toString().padStart(2, '0');
+    const month = (utc5Date.getMonth() + 1).toString().padStart(2, '0');
+    const year = utc5Date.getFullYear();
+    const hours = utc5Date.getHours().toString().padStart(2, '0');
+    const minutes = utc5Date.getMinutes().toString().padStart(2, '0');
     return `${day}.${month}.${year} ${hours}:${minutes}`;
   } catch (error) {
     return '';
@@ -88,16 +90,27 @@ export const formatDateTimeUTC5 = (isoString: string): string => {
   return formatDateUTC5(isoString);
 };
 
+// Отформатировать дедлайн БЕЗ добавления 5 часов
+export const formatDeadline = (isoString: string): string => {
+  if (!isoString) return '';
+  try {
+    const date = new Date(isoString);
+    const day = date.getDate().toString().padStart(2, '0');
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const year = date.getFullYear();
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    return `${day}.${month}.${year} ${hours}:${minutes}`;
+  } catch (error) {
+    return '';
+  }
+};
+
 // Отформатировать дедлайн с учетом цветовой индикации
 export const formatDeadlineUTC5 = (isoString: string): string => {
   if (!isoString) return '';
   try {
-    const date = new Date(isoString);
-    const now = new Date();
-    const diffTime = date.getTime() - now.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
-    const formatted = formatDateUTC5(isoString);
+    const formatted = formatDeadline(isoString);
     
     // Возвращаем только форматированную дату, без стилей
     // Стили будут применяться в компоненте

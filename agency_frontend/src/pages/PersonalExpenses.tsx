@@ -16,6 +16,11 @@ interface EmployeeExpense {
   amount: number
   description?: string
   date?: string
+  project_id?: number
+  project?: {
+    id: number
+    name: string
+  }
   created_at: string
 }
 
@@ -30,17 +35,25 @@ interface CommonExpense {
   creator_name?: string
 }
 
+interface Project {
+  id: number
+  name: string
+  logo?: string
+}
+
 
 function PersonalExpenses() {
   const [tab, setTab] = useState<'personal' | 'company'>('personal')
   const [expenses, setExpenses] = useState<EmployeeExpense[]>([])
   const [companyExpenses, setCompanyExpenses] = useState<CommonExpense[]>([])
+  const [projects, setProjects] = useState<Project[]>([])
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<EmployeeExpense | CommonExpense | null>(null)
   const [name, setName] = useState('')
   const [amount, setAmount] = useState('')
   const [description, setDescription] = useState('')
   const [date, setDate] = useState('')
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
   
   const token = localStorage.getItem('token')
   const role = localStorage.getItem('role')
@@ -92,9 +105,31 @@ function PersonalExpenses() {
     }
   }
 
+  const loadProjects = async () => {
+    if (!token) {
+      setProjects([])
+      return
+    }
 
-  useEffect(() => { 
+    try {
+      const res = await fetch(`${API_URL}/projects/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setProjects(Array.isArray(data) ? data : [])
+      } else {
+        setProjects([])
+      }
+    } catch (error) {
+      setProjects([])
+    }
+  }
+
+
+  useEffect(() => {
     loadExpenses()
+    loadProjects()
     if (isAdmin) {
       loadCompanyExpenses()
     }
@@ -106,6 +141,7 @@ function PersonalExpenses() {
     setAmount('')
     setDescription('')
     setDate(new Date().toISOString().split('T')[0]) // Default to today
+    setSelectedProjectId(null)
     setShowModal(true)
   }
 
@@ -115,6 +151,11 @@ function PersonalExpenses() {
     setAmount(formatInput(String(expense.amount || 0)))
     setDescription(expense.description || '')
     setDate(expense.date || '')
+    if ('project_id' in expense) {
+      setSelectedProjectId(expense.project_id || null)
+    } else {
+      setSelectedProjectId(null)
+    }
     setShowModal(true)
   }
 
@@ -128,9 +169,12 @@ function PersonalExpenses() {
       description: description || null,
       date: date || null
     }
-    
+
     if (isCompanyExpense) {
       payload.category_id = null
+    } else {
+      // Only add project_id for personal expenses
+      payload.project_id = selectedProjectId
     }
 
     const endpoint = isCompanyExpense ? 'common-expenses' : 'employee-expenses'
@@ -287,6 +331,11 @@ function PersonalExpenses() {
                     <th className="px-6 py-3 text-left text-sm font-medium text-gray-900">
                       Дата
                     </th>
+                    {tab === 'personal' && (
+                      <th className="px-6 py-3 text-left text-sm font-medium text-gray-900">
+                        Проект
+                      </th>
+                    )}
                     <th className="px-6 py-3 text-left text-sm font-medium text-gray-900">
                       Комментарий
                     </th>
@@ -311,6 +360,13 @@ function PersonalExpenses() {
                           {expense.date ? new Date(expense.date).toLocaleDateString('ru-RU') : '-'}
                         </div>
                       </td>
+                      {tab === 'personal' && (
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm text-gray-900">
+                            {expense.project ? expense.project.name : '-'}
+                          </div>
+                        </td>
+                      )}
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-900 max-w-xs truncate">
                           {expense.description || '-'}
@@ -399,14 +455,33 @@ function PersonalExpenses() {
                 <label className="block text-sm font-medium text-gray-900 mb-2">
                   Дата
                 </label>
-                <input 
+                <input
                   type="date"
-                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent transition-all duration-200 bg-gray-50 focus:bg-white" 
-                  value={date} 
-                  onChange={e => setDate(e.target.value)} 
+                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent transition-all duration-200 bg-gray-50 focus:bg-white"
+                  value={date}
+                  onChange={e => setDate(e.target.value)}
                 />
               </div>
 
+              {tab === 'personal' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 mb-2">
+                    Проект (опционально)
+                  </label>
+                  <select
+                    className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent transition-all duration-200 bg-gray-50 focus:bg-white"
+                    value={selectedProjectId || ''}
+                    onChange={e => setSelectedProjectId(e.target.value ? Number(e.target.value) : null)}
+                  >
+                    <option value="">Без привязки к проекту</option>
+                    {projects.map(project => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-900 mb-2">

@@ -6,12 +6,11 @@ import ProjectsOverview from './ProjectsOverview'
 import { usePersistedState } from '../utils/filterStorage'
 
 function SmmProjects() {
-  const [activeTab, setActiveTab] = usePersistedState('active_tab_smm_projects', 'tasks')
   const location = useLocation()
   const role = localStorage.getItem('role')
-
+  
   // Определяем доступные вкладки в зависимости от роли
-  const getAvailableTabs = () => {
+  const tabs = (() => {
     const allTabs = [
       { id: 'tasks', label: 'Задачи', component: Tasks },
       { id: 'calendar', label: 'Календарь съемок', component: Calendar },
@@ -25,24 +24,23 @@ function SmmProjects() {
     
     // СММ менеджеры, Digital и администраторы видят все вкладки
     return allTabs
-  }
-
-  const tabs = getAvailableTabs()
+  })()
+  
+  // Инициализируем activeTab после определения tabs
+  const defaultTab = tabs.length > 0 ? tabs[0].id : 'tasks'
+  const [activeTab, setActiveTab] = usePersistedState('active_tab_smm_projects', defaultTab)
 
   const ActiveComponent = tabs.find(tab => tab.id === activeTab)?.component || Tasks
 
-  // Check if we need to switch to projects tab when coming from ProjectDetail
+  // Проверяем доступность текущей вкладки
   useEffect(() => {
-    if (location.state?.fromProjectDetail) {
-      setActiveTab('projects')
-    }
+    const availableTabIds = tabs.map(tab => tab.id)
     
     // Проверяем, есть ли доступ к текущей вкладке
-    const availableTabIds = tabs.map(tab => tab.id)
     if (!availableTabIds.includes(activeTab)) {
       setActiveTab('tasks') // Переключаем на доступную вкладку
     }
-  }, [location, tabs, activeTab])
+  }, [tabs.length]) // Зависимость только от количества вкладок, не от location
 
   return (
     <div className="w-full h-full overflow-hidden">
@@ -54,7 +52,12 @@ function SmmProjects() {
           {tabs.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={(e) => {
+                e.preventDefault()
+                if (activeTab !== tab.id) {
+                  setActiveTab(tab.id)
+                }
+              }}
               className={`py-2 px-3 border-b-2 font-medium text-sm whitespace-nowrap ${
                 activeTab === tab.id
                   ? 'border-blue-500 text-blue-600'

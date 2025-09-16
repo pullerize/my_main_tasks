@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../api'
-import { formatDateShortUTC5, getCurrentTimeUTC5 } from '../utils/dateUtils'
+import { formatDateShortUTC5, getCurrentTimeUTC5, formatDateUTC5, formatDeadline } from '../utils/dateUtils'
 import { usePersistedState } from '../utils/filterStorage'
 
 interface Task {
@@ -9,7 +9,9 @@ interface Task {
   description?: string
   status: string
   deadline?: string
+  accepted_at?: string
   finished_at?: string
+  resume_count?: number
   executor_id?: number
   author_id?: number
   created_at: string
@@ -17,6 +19,11 @@ interface Task {
   task_type?: string
   task_format?: string
   high_priority?: boolean
+  is_recurring?: boolean
+  recurrence_type?: string
+  recurrence_time?: string
+  recurrence_days?: string
+  next_run_at?: string
 }
 
 interface User {
@@ -155,14 +162,6 @@ const renderDeadline = (t: Task) => {
     return ''
   }
   
-  if (t.status === 'cancelled') {
-    return (
-      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-        ❌ Отменено
-      </span>
-    )
-  }
-  
   if (!t.deadline) {
     return (
       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
@@ -207,6 +206,16 @@ const renderDeadline = (t: Task) => {
   }
 }
 
+// Helper function to translate recurrence types
+const getRecurrenceTypeLabel = (type: string): string => {
+  switch (type) {
+    case 'daily': return 'Ежедневно'
+    case 'weekly': return 'Еженедельно'
+    case 'monthly': return 'Ежемесячно'
+    default: return type
+  }
+}
+
 function Tasks() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [showModal, setShowModal] = useState(false)
@@ -215,13 +224,17 @@ function Tasks() {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [executorId, setExecutorId] = useState('')
-  const [deadlineDate, setDeadlineDate] = useState('')
   const [deadlineTime, setDeadlineTime] = useState('')
+  const [deadlineDate, setDeadlineDate] = useState('')
   const [project, setProject] = useState('')
   const [taskType, setTaskType] = useState('')
   const [taskFormat, setTaskFormat] = useState('')
   const [executorRole, setExecutorRole] = useState('')
   const [highPriority, setHighPriority] = useState(false)
+  const [isRecurring, setIsRecurring] = useState(false)
+  const [recurrenceType, setRecurrenceType] = useState('')
+  const [recurrenceTime, setRecurrenceTime] = useState('')
+  const [recurrenceDays, setRecurrenceDays] = useState<number[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [projects, setProjects] = useState<{id: number; name: string}[]>([])
 
@@ -319,7 +332,10 @@ function Tasks() {
         if (res.ok) return res.json()
         throw new Error('Unauthorized')
       })
-      .then((data) => setTasks(Array.isArray(data) ? data : []))
+      .then((data) => {
+        console.log('Tasks from API:', data);
+        setTasks(Array.isArray(data) ? data : []);
+      })
       .catch(() => setTasks([]))
       
     fetch(`${API_URL}/users/`, { headers: { Authorization: `Bearer ${token}` } })
@@ -352,6 +368,7 @@ function Tasks() {
   const filteredTasks = Array.isArray(tasks) ? tasks.filter((t) => {
     if (!Array.isArray(users)) return true
     
+    
     const execRole = users.find((u) => u.id === t.executor_id)?.role
     if (role === 'designer' && execRole !== 'designer') return false
     if (role === 'digital' && execRole !== 'digital') return false
@@ -363,9 +380,9 @@ function Tasks() {
     )
       return false
     if (filterStatus !== 'all') {
-      if (filterStatus === 'active' && (t.status === 'done' || t.status === 'cancelled')) return false
+      if (filterStatus === 'new' && t.status !== 'new') return false
+      if (filterStatus === 'in_progress' && t.status !== 'in_progress') return false
       if (filterStatus === 'done' && t.status !== 'done') return false
-      if (filterStatus === 'cancelled' && t.status !== 'cancelled') return false
     }
     if (filterRole) {
       const exec = users.find((u) => u.id === t.executor_id)
@@ -396,7 +413,11 @@ function Tasks() {
   const sortedTasks = filteredTasks
     .slice()
     .sort((a, b) => {
-      // Sort by creation date: newest first
+      // First sort by priority: high priority tasks first
+      if (a.high_priority && !b.high_priority) return -1
+      if (!a.high_priority && b.high_priority) return 1
+      
+      // Then sort by creation date: newest first
       const dateA = new Date(a.created_at).getTime()
       const dateB = new Date(b.created_at).getTime()
       return dateB - dateA
@@ -405,10 +426,13 @@ function Tasks() {
   const validateDeadline = () => {
     const execRole = executorId && Array.isArray(users) ? users.find(u => u.id === Number(executorId))?.role : role
     if (execRole === 'designer') {
-      if (!deadlineDate || !deadlineTime) return true
+      if (!deadlineTime) return true
       const now = new Date()
       if (now.getHours() >= 17) {
-        const dl = new Date(`${deadlineDate}T${deadlineTime}`)
+        const today = new Date()
+        const [h, m] = deadlineTime.split(':').map(Number)
+        const dl = new Date(today)
+        dl.setHours(h, m, 0, 0)
         const next = new Date(now)
         next.setDate(now.getDate() + 1)
         next.setHours(9,0,0,0)
@@ -424,20 +448,22 @@ function Tasks() {
       return
     }
     let deadlineStr: string | undefined
-    if (deadlineDate && deadlineTime.length === 5) {
-      deadlineStr = `${deadlineDate}T${deadlineTime}`
-    } else if (!deadlineDate && deadlineTime.length === 5) {
-      const now = new Date(
-        getCurrentTimeUTC5()
-      )
-      const [hh, mm] = deadlineTime.split(':').map(Number)
-      const dl = new Date(now)
-      dl.setHours(hh, mm, 0, 0)
-      if (dl <= now) dl.setDate(dl.getDate() + 1)
-      const y = dl.getFullYear()
-      const m = String(dl.getMonth() + 1).padStart(2, '0')
-      const d = String(dl.getDate()).padStart(2, '0')
-      deadlineStr = `${y}-${m}-${d}T${deadlineTime}`
+    if (deadlineTime.length === 5) {
+      if (isRecurring) {
+        // Для повторяющихся задач используем текущую дату
+        const now = new Date()
+        const [hh, mm] = deadlineTime.split(':').map(Number)
+        const today = new Date(now)
+        today.setHours(hh, mm, 0, 0)
+        
+        const y = today.getFullYear()
+        const m = String(today.getMonth() + 1).padStart(2, '0')
+        const d = String(today.getDate()).padStart(2, '0')
+        deadlineStr = `${y}-${m}-${d}T${deadlineTime}`
+      } else if (deadlineDate) {
+        // Для обычных задач используем выбранную дату
+        deadlineStr = `${deadlineDate}T${deadlineTime}`
+      }
     }
     const payload = {
       title,
@@ -447,7 +473,11 @@ function Tasks() {
       task_format: taskFormat || undefined,
       executor_id: executorId ? Number(executorId) : undefined,
       deadline: deadlineStr,
-      
+      high_priority: highPriority,
+      is_recurring: isRecurring,
+      recurrence_type: isRecurring ? recurrenceType : undefined,
+      recurrence_time: isRecurring ? recurrenceTime : undefined,
+      recurrence_days: isRecurring && recurrenceDays.length > 0 ? recurrenceDays.join(',') : undefined,
     }
     const token = localStorage.getItem('token')
     await fetch(`${API_URL}/tasks/`, {
@@ -469,15 +499,19 @@ function Tasks() {
     setTaskFormat('')
     setExecutorId('')
     setExecutorRole('')
-    setDeadlineDate('')
     setDeadlineTime('')
+    setDeadlineDate('')
     setHighPriority(false)
+    setIsRecurring(false)
+    setRecurrenceType('')
+    setRecurrenceDays([])
     const res = await fetch(`${API_URL}/tasks/`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
     })
     const data = await res.json()
+    console.log('Tasks refreshed:', data);
     setTasks(Array.isArray(data) ? data : [])
   }
 
@@ -488,20 +522,22 @@ function Tasks() {
       return
     }
     let deadlineStr: string | undefined
-    if (deadlineDate && deadlineTime.length === 5) {
-      deadlineStr = `${deadlineDate}T${deadlineTime}`
-    } else if (!deadlineDate && deadlineTime.length === 5) {
-      const now = new Date(
-        getCurrentTimeUTC5()
-      )
-      const [hh, mm] = deadlineTime.split(':').map(Number)
-      const dl = new Date(now)
-      dl.setHours(hh, mm, 0, 0)
-      if (dl <= now) dl.setDate(dl.getDate() + 1)
-      const y = dl.getFullYear()
-      const m = String(dl.getMonth() + 1).padStart(2, '0')
-      const d = String(dl.getDate()).padStart(2, '0')
-      deadlineStr = `${y}-${m}-${d}T${deadlineTime}`
+    if (deadlineTime.length === 5) {
+      if (isRecurring) {
+        // Для повторяющихся задач используем текущую дату
+        const now = new Date()
+        const [hh, mm] = deadlineTime.split(':').map(Number)
+        const today = new Date(now)
+        today.setHours(hh, mm, 0, 0)
+        
+        const y = today.getFullYear()
+        const m = String(today.getMonth() + 1).padStart(2, '0')
+        const d = String(today.getDate()).padStart(2, '0')
+        deadlineStr = `${y}-${m}-${d}T${deadlineTime}`
+      } else if (deadlineDate) {
+        // Для обычных задач используем выбранную дату
+        deadlineStr = `${deadlineDate}T${deadlineTime}`
+      }
     }
     const payload = {
       title,
@@ -511,7 +547,11 @@ function Tasks() {
       task_format: taskFormat || undefined,
       executor_id: executorId ? Number(executorId) : undefined,
       deadline: deadlineStr,
-      
+      high_priority: highPriority,
+      is_recurring: isRecurring,
+      recurrence_type: isRecurring ? recurrenceType : undefined,
+      recurrence_time: isRecurring ? recurrenceTime : undefined,
+      recurrence_days: isRecurring && recurrenceDays.length > 0 ? recurrenceDays.join(',') : undefined,
     }
     const token = localStorage.getItem('token')
     await fetch(`${API_URL}/tasks/${selectedTask.id}`, {
@@ -531,13 +571,17 @@ function Tasks() {
     setTaskFormat('')
     setExecutorId('')
     setExecutorRole('')
-    setDeadlineDate('')
     setDeadlineTime('')
+    setDeadlineDate('')
     setHighPriority(false)
+    setIsRecurring(false)
+    setRecurrenceType('')
+    setRecurrenceDays([])
     const res = await fetch(`${API_URL}/tasks/`, {
       headers: { Authorization: `Bearer ${token}` },
     })
     const data = await res.json()
+    console.log('Tasks after save:', data);
     setTasks(Array.isArray(data) ? data : [])
   }
 
@@ -548,6 +592,58 @@ function Tasks() {
       headers: { Authorization: `Bearer ${token}` },
     })
     setTasks(Array.isArray(tasks) ? tasks.filter((t) => t.id !== id) : [])
+  }
+
+  const togglePriority = async (id: number, currentPriority: boolean) => {
+    try {
+      console.log('Toggling priority for task', id, 'from', currentPriority, 'to', !currentPriority)
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/tasks/${id}/priority`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          high_priority: !currentPriority
+        })
+      })
+      
+      if (!response.ok) {
+        console.error('Failed to toggle priority:', response.status, response.statusText)
+        const errorText = await response.text()
+        console.error('Error response:', errorText)
+        return
+      }
+      
+      console.log('Priority toggled successfully, updating local state')
+      
+      // Обновляем задачу в локальном состоянии, создавая новый массив для форсирования ререндера
+      setTasks(prevTasks => {
+        if (!Array.isArray(prevTasks)) return []
+        const updatedTasks = prevTasks.map(t => 
+          t.id === id ? { ...t, high_priority: !currentPriority } : t
+        )
+        console.log('Updated tasks:', updatedTasks.find(t => t.id === id))
+        return [...updatedTasks] // Создаем новый массив для гарантированного ререндера
+      })
+      
+      console.log('Local state updated')
+    } catch (error) {
+      console.error('Error toggling priority:', error)
+    }
+  }
+
+  const acceptTask = async (id: number) => {
+    const token = localStorage.getItem('token')
+    const res = await fetch(`${API_URL}/tasks/${id}/accept`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (res.ok) {
+      const updated = await res.json()
+      setTasks(Array.isArray(tasks) ? tasks.map((t) => (t.id === id ? updated : t)) : [])
+    }
   }
 
   const toggleStatus = async (id: number, status: string) => {
@@ -565,7 +661,7 @@ function Tasks() {
   return (
     <div className="w-full overflow-hidden bg-gray-50 min-h-screen">
       <div className="bg-white shadow-sm border-b p-6">
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center mb-4">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Управление задачами</h1>
             <p className="text-gray-600 mt-1">Отслеживайте прогресс и управляйте задачами команды</p>
@@ -589,14 +685,37 @@ function Tasks() {
                 setExecutorRole('')
               }
               setHighPriority(false)
-              setDeadlineDate('')
-              setDeadlineTime('')
+                        setDeadlineTime('')
+    setDeadlineDate('')
               setShowModal(true)
             }}
           >
             <span>+</span>
             <span>Создать задачу</span>
           </button>
+        </div>
+        
+        {/* Легенда статусов */}
+        <div className="flex items-center gap-6 mt-4 p-3 bg-gray-50 rounded-lg">
+          <span className="text-sm font-medium text-gray-700">Статусы задач:</span>
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+              <span className="text-sm text-gray-600">Новая</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+              <span className="text-sm text-gray-600">В работе</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-green-500"></div>
+              <span className="text-sm text-gray-600">Выполнена</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <span className="text-sm text-gray-600">Просрочена</span>
+            </div>
+          </div>
         </div>
       </div>
       <div className="bg-white p-6 shadow-sm border-b">
@@ -675,9 +794,9 @@ function Tasks() {
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
             >
-              <option value="active">Активные</option>
+              <option value="new">Новые</option>
+              <option value="in_progress">В работе</option>
               <option value="done">Завершенные</option>
-              <option value="cancelled">Отмененные</option>
               <option value="all">Все</option>
             </select>
           </div>
@@ -723,19 +842,21 @@ function Tasks() {
                 {sortedTasks.map((t) => (
                   <tr
                     key={t.id}
-                    className="hover:bg-gray-50 transition-colors duration-150"
+                    className={`hover:bg-gray-50 transition-colors duration-150 ${
+                      ''
+                    }`}
                   >
                     <td className="px-6 py-4">
                       <div className="flex items-center space-x-3">
                         <div className="flex items-center space-x-2">
                           <div className={`w-3 h-3 rounded-full ${
+                            t.status === 'new' ? 'bg-blue-500' :
+                            t.status === 'in_progress' ? 'bg-yellow-500' :
                             t.status === 'done' ? 'bg-green-500' : 
-                            t.status === 'cancelled' ? 'bg-gray-500' :
-                            t.high_priority ? 'bg-red-500' : 'bg-yellow-500'
+                            // Проверка на просроченность
+                            (t.deadline && new Date(t.deadline) < new Date()) ? 'bg-red-500' : 
+                            'bg-gray-400'
                           }`}></div>
-                          {t.high_priority && t.status !== 'done' && (
-                            <span className="text-red-600 text-xs font-medium">🔥 Приоритет</span>
-                          )}
                         </div>
                         <div
                           className="text-sm font-medium text-gray-900 cursor-pointer hover:text-blue-600 transition-colors"
@@ -750,17 +871,64 @@ function Tasks() {
                             setTaskFormat(t.task_format || '')
                             setExecutorId(t.executor_id ? String(t.executor_id) : '')
                             setExecutorRole(Array.isArray(users) ? (users.find(u => u.id === t.executor_id)?.role || '') : '')
+                            setHighPriority(t.high_priority || false)
+                            setIsRecurring(t.is_recurring || false)
+                            setRecurrenceType(t.recurrence_type || '')
+                            // Парсим recurrence_days из строки в массив
+                            if (t.recurrence_days) {
+                              const days = t.recurrence_days.split(',').map(d => parseInt(d.trim())).filter(d => !isNaN(d))
+                              setRecurrenceDays(days)
+                            } else {
+                              setRecurrenceDays([])
+                            }
+                            setRecurrenceTime(t.recurrence_time || '')
                             if (t.deadline) {
                               const d = new Date(t.deadline)
-                              setDeadlineDate(d.toISOString().slice(0,10))
-                              setDeadlineTime(d.toISOString().slice(11,16))
+                              // Используем локальное время вместо UTC
+                              const hours = d.getHours().toString().padStart(2, '0')
+                              const minutes = d.getMinutes().toString().padStart(2, '0')
+                              setDeadlineTime(`${hours}:${minutes}`)
+                              
+                              // Устанавливаем дату дедлайна
+                              const year = d.getFullYear()
+                              const month = (d.getMonth() + 1).toString().padStart(2, '0')
+                              const day = d.getDate().toString().padStart(2, '0')
+                              setDeadlineDate(`${year}-${month}-${day}`)
                             } else {
-                              setDeadlineDate('')
                               setDeadlineTime('')
+                              setDeadlineDate('')
                             }
                           }}
                         >
-                          <div className="truncate max-w-[180px]">{t.title}</div>
+                          <div className="truncate max-w-[180px] flex items-center gap-2">
+                            <button
+                              className={`inline-flex items-center justify-center w-5 h-5 hover:scale-110 transition-all duration-200 ${
+                                t.high_priority 
+                                  ? 'text-yellow-500 drop-shadow-[0_0_8px_rgba(250,204,21,0.4)]' 
+                                  : 'text-gray-400 hover:text-yellow-400'
+                              }`}
+                              title={t.high_priority ? 'Убрать высокий приоритет' : 'Поставить высокий приоритет'}
+                              onClick={(e) => {
+                                e.stopPropagation() // Предотвращаем открытие модального окна
+                                togglePriority(t.id, t.high_priority || false)
+                              }}
+                            >
+                              <svg 
+                                width="16" 
+                                height="16" 
+                                viewBox="0 0 24 24" 
+                                fill={t.high_priority ? "currentColor" : "none"}
+                                stroke="currentColor" 
+                                strokeWidth="2"
+                              >
+                                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                              </svg>
+                            </button>
+                            {t.title}
+                            {t.is_recurring && (
+                              <span className="text-blue-600 text-xs" title="Повторяющаяся задача">🔄</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </td>
@@ -792,13 +960,13 @@ function Tasks() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="text-sm">
-                        {t.status === 'done' ? (
+                        {t.status === 'new' ? (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                            🆕 Новая
+                          </span>
+                        ) : t.status === 'done' ? (
                           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                             ✓ Завершено
-                          </span>
-                        ) : t.status === 'cancelled' ? (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                            ❌ Отменено
                           </span>
                         ) : (
                           renderDeadline(t)
@@ -808,10 +976,34 @@ function Tasks() {
                     <td className="px-6 py-4">
                       <div className="flex gap-2 justify-start flex-wrap">
                         {(() => {
-                          const isOverdue = t.deadline && t.status !== 'done' && t.status !== 'cancelled' && new Date(t.deadline) < new Date()
+                          const isOverdue = t.deadline && t.status !== 'done' && new Date(t.deadline) < new Date()
                           const canManage = t.executor_id === userId || t.author_id === userId || role === 'admin' || isOverdue
                           
-                          if (t.status !== 'done' && t.status !== 'cancelled') {
+                          // Для новых задач
+                          if (t.status === 'new') {
+                            return (
+                              <>
+                                {canManage && (
+                                  <button
+                                    className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                                    onClick={() => deleteTask(t.id)}
+                                  >
+                                    Удалить
+                                  </button>
+                                )}
+                                {t.executor_id === userId && (
+                                  <button
+                                    className="inline-flex items-center px-3 py-1.5 border border-blue-300 text-xs font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                                    onClick={() => acceptTask(t.id)}
+                                  >
+                                    Принять в работу
+                                  </button>
+                                )}
+                              </>
+                            )
+                          }
+                          // Для активных задач (в работе)
+                          else if (t.status === 'in_progress') {
                             return (
                               <>
                                 {canManage && (
@@ -837,7 +1029,9 @@ function Tasks() {
                                 )}
                               </>
                             )
-                          } else {
+                          }
+                          // Для завершенных задач
+                          else {
                             return (
                               (t.executor_id === userId || t.author_id === userId || role === 'admin') && (
                                 <button
@@ -1139,40 +1333,321 @@ function Tasks() {
                       Формат: {FORMAT_ICONS[taskFormat]} {taskFormat}
                     </div>
                   )}
-                  <div>Время постановки задачи: {formatDate(selectedTask?.created_at)}</div>
+                  <div className="flex items-center gap-2">
+                    Приоритет: 
+                    {selectedTask?.high_priority ? (
+                      <span className="flex items-center gap-1 text-yellow-500">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2">
+                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                        </svg>
+                        Высокий
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-gray-400">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                        </svg>
+                        Обычный
+                      </span>
+                    )}
+                  </div>
+                  <div>Время постановки задачи: {formatDateUTC5(selectedTask?.created_at || '')}</div>
+                  {selectedTask?.accepted_at && (
+                    <div>Время принятия в работу: {formatDeadline(selectedTask.accepted_at)}</div>
+                  )}
+                  {selectedTask?.deadline && (
+                    <div>Дедлайн: {formatDeadline(selectedTask.deadline)}</div>
+                  )}
                   {selectedTask?.finished_at && (
-                    <div>Время завершения задачи: {formatDate(selectedTask?.finished_at)}</div>
+                    <div>Время завершения задачи: {formatDeadline(selectedTask.finished_at)}</div>
+                  )}
+                  {selectedTask?.resume_count !== undefined && selectedTask.resume_count > 0 && (
+                    <div className="flex items-center gap-2">
+                      <span>Количество возобновлений:</span>
+                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                        🔄 {selectedTask.resume_count} раз{selectedTask.resume_count > 1 ? (selectedTask.resume_count > 4 ? '' : 'а') : ''}
+                      </span>
+                    </div>
                   )}
                   <div>Кто поставил задачу: {getUserName(selectedTask?.author_id)}</div>
                 </div>
             ) : null}
-            <div className="flex gap-2 mb-4">
-              <input
-                type="date"
-                className="border p-2 flex-1"
-                value={deadlineDate}
-                onChange={(e) => setDeadlineDate(e.target.value)}
-                disabled={!isEditing}
-              />
-              <input
-                type="text"
-                className="border p-2 w-24"
-                placeholder="HH:MM"
-                value={deadlineTime}
-                onChange={(e) => {
-                  let v = e.target.value.replace(/\D/g, '').slice(0, 4)
-                  if (v.length >= 3) v = v.slice(0, 2) + ':' + v.slice(2)
-                  setDeadlineTime(v)
-                }}
-                disabled={!isEditing}
-              />
-            </div>
+            
+
+            {/* Высокий приоритет */}
+            {isEditing && (
+              <div className="flex items-center gap-2 mb-4">
+                <input
+                  type="checkbox"
+                  id="highPriority"
+                  className="w-4 h-4"
+                  checked={highPriority}
+                  onChange={(e) => setHighPriority(e.target.checked)}
+                />
+                <label htmlFor="highPriority" className="text-sm font-medium text-gray-700">
+                  Высокий приоритет
+                </label>
+              </div>
+            )}
+
+            {/* Повторяющаяся задача */}
+            {isEditing && (
+              <div className="mb-4 p-4 border rounded-lg bg-gray-50">
+                <div className="flex items-center gap-2 mb-3">
+                  <input
+                    type="checkbox"
+                    id="isRecurring"
+                    className="w-4 h-4"
+                    checked={isRecurring}
+                    onChange={(e) => setIsRecurring(e.target.checked)}
+                  />
+                  <label htmlFor="isRecurring" className="text-sm font-medium text-gray-700">
+                    🔄 Повторяющаяся задача
+                  </label>
+                </div>
+                
+                {isRecurring && (
+                  <div className="ml-6">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Тип повторения:
+                    </label>
+                    <select
+                      className="border p-2 w-full rounded-md mb-3"
+                      value={recurrenceType}
+                      onChange={(e) => {
+                        setRecurrenceType(e.target.value)
+                        setRecurrenceDays([]) // Сбрасываем выбранные дни при смене типа
+                      }}
+                    >
+                      <option value="">Выберите тип повторения</option>
+                      <option value="daily">Ежедневно</option>
+                      <option value="weekly">Еженедельно</option>
+                      <option value="monthly">Ежемесячно</option>
+                    </select>
+                    
+                    {/* Выбор дней в зависимости от типа повторения */}
+                    {recurrenceType === 'daily' && (
+                      <div className="mb-4">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Дни недели:
+                        </label>
+                        <div className="flex flex-wrap gap-2">
+                          {[
+                            { value: 1, label: 'Пн' },
+                            { value: 2, label: 'Вт' },
+                            { value: 3, label: 'Ср' },
+                            { value: 4, label: 'Чт' },
+                            { value: 5, label: 'Пт' },
+                            { value: 6, label: 'Сб' },
+                            { value: 7, label: 'Вс' }
+                          ].map(day => (
+                            <label key={day.value} className="flex items-center gap-1">
+                              <input
+                                type="checkbox"
+                                checked={recurrenceDays.includes(day.value)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setRecurrenceDays([...recurrenceDays, day.value])
+                                  } else {
+                                    setRecurrenceDays(recurrenceDays.filter(d => d !== day.value))
+                                  }
+                                }}
+                              />
+                              <span className="text-sm">{day.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Выберите дни недели для ежедневного повторения
+                        </p>
+                      </div>
+                    )}
+                    
+                    {recurrenceType === 'weekly' && (
+                      <div className="mb-4">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Дни недели:
+                        </label>
+                        <div className="flex flex-wrap gap-2">
+                          {[
+                            { value: 1, label: 'Пн' },
+                            { value: 2, label: 'Вт' },
+                            { value: 3, label: 'Ср' },
+                            { value: 4, label: 'Чт' },
+                            { value: 5, label: 'Пт' },
+                            { value: 6, label: 'Сб' },
+                            { value: 7, label: 'Вс' }
+                          ].map(day => (
+                            <label key={day.value} className="flex items-center gap-1">
+                              <input
+                                type="checkbox"
+                                checked={recurrenceDays.includes(day.value)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setRecurrenceDays([...recurrenceDays, day.value])
+                                  } else {
+                                    setRecurrenceDays(recurrenceDays.filter(d => d !== day.value))
+                                  }
+                                }}
+                              />
+                              <span className="text-sm">{day.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Выберите дни недели для еженедельного повторения
+                        </p>
+                      </div>
+                    )}
+                    
+                    {recurrenceType === 'monthly' && (
+                      <div className="mb-4">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          День месяца:
+                        </label>
+                        <select
+                          className="border p-2 w-full rounded-md"
+                          value={recurrenceDays.length > 0 ? recurrenceDays[0] : ''}
+                          onChange={(e) => {
+                            const day = parseInt(e.target.value)
+                            if (day) {
+                              setRecurrenceDays([day])
+                            } else {
+                              setRecurrenceDays([])
+                            }
+                          }}
+                        >
+                          <option value="">Выберите день месяца</option>
+                          {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                            <option key={day} value={day}>{day}</option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Выберите день месяца для ежемесячного повторения
+                        </p>
+                      </div>
+                    )}
+                    
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Время создания задачи:
+                    </label>
+                    <input
+                      type="time"
+                      className="border p-2 w-full rounded-md"
+                      value={recurrenceTime}
+                      onChange={(e) => setRecurrenceTime(e.target.value)}
+                      placeholder="16:45"
+                    />
+                    
+                    <p className="text-xs text-gray-500 mt-1">
+                      Задача будет создаваться в указанное время. Если время еще не наступило сегодня - создастся сегодня, иначе в следующий период.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Информация о повторяющейся задаче для просмотра */}
+            {!isEditing && selectedTask?.is_recurring && (
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center gap-2 text-blue-800">
+                  <span className="text-lg">🔄</span>
+                  <div>
+                    <div className="font-medium">Повторяющаяся задача</div>
+                    <div className="text-sm">
+                      Тип повторения: {getRecurrenceTypeLabel(selectedTask.recurrence_type)}
+                    </div>
+                    {selectedTask.recurrence_time && (
+                      <div className="text-sm">
+                        Время создания: {selectedTask.recurrence_time}
+                      </div>
+                    )}
+                    {selectedTask.recurrence_days && (
+                      <div className="text-sm">
+                        {selectedTask.recurrence_type === 'monthly' ? 'День месяца:' : 'Дни:'} {
+                          selectedTask.recurrence_type === 'monthly' 
+                            ? selectedTask.recurrence_days
+                            : selectedTask.recurrence_days.split(',').map(d => {
+                                const dayNames = { '1': 'Пн', '2': 'Вт', '3': 'Ср', '4': 'Чт', '5': 'Пт', '6': 'Сб', '7': 'Вс' }
+                                return dayNames[d.trim()] || d.trim()
+                              }).join(', ')
+                        }
+                      </div>
+                    )}
+                    {selectedTask.next_run_at && (
+                      <div className="text-sm">
+                        Следующая генерация: {formatDeadline(selectedTask.next_run_at)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Дедлайн */}
+            {isEditing && (
+              <div className="mb-4">
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Дедлайн</h3>
+                
+                {/* Для повторяющихся задач только время */}
+                {isRecurring ? (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Время дедлайна:
+                    </label>
+                    <input
+                      type="text"
+                      className="border p-2 w-24"
+                      placeholder="HH:MM"
+                      value={deadlineTime}
+                      onChange={(e) => {
+                        let v = e.target.value.replace(/\D/g, '').slice(0, 4)
+                        if (v.length >= 3) v = v.slice(0, 2) + ':' + v.slice(2)
+                        setDeadlineTime(v)
+                      }}
+                    />
+                  </div>
+                ) : (
+                  /* Для обычных задач дата и время */
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Дата дедлайна:
+                      </label>
+                      <input
+                        type="date"
+                        className="border p-2 rounded"
+                        value={deadlineDate}
+                        onChange={(e) => setDeadlineDate(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Время дедлайна:
+                      </label>
+                      <input
+                        type="text"
+                        className="border p-2 w-24"
+                        placeholder="HH:MM"
+                        value={deadlineTime}
+                        onChange={(e) => {
+                          let v = e.target.value.replace(/\D/g, '').slice(0, 4)
+                          if (v.length >= 3) v = v.slice(0, 2) + ':' + v.slice(2)
+                          setDeadlineTime(v)
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex justify-end">
               <button
                 className="mr-2 px-4 py-1 border rounded"
                 onClick={() => { setShowModal(false); setSelectedTask(null); setIsEditing(false); }}
               >
-                Отмена
+                Закрыть
               </button>
               {!isEditing && selectedTask && (
                 <button

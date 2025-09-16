@@ -87,6 +87,7 @@ function Navbar() {
     const userId = localStorage.getItem('userId')
     const lastVisitedPath = localStorage.getItem('lastVisitedPath')
     
+    
     localStorage.clear()
     
     // Восстанавливаем важные данные
@@ -94,6 +95,7 @@ function Navbar() {
     if (role) localStorage.setItem('role', role)  
     if (userId) localStorage.setItem('userId', userId)
     if (lastVisitedPath) localStorage.setItem('lastVisitedPath', lastVisitedPath)
+    
     
     // Очистка sessionStorage
     sessionStorage.clear()
@@ -200,10 +202,10 @@ function Navbar() {
   const adminMenuItems = [
     { to: "/smm-projects", label: "СММ проекты", icon: "📱" },
     { to: "/digital/tasks", label: "Digital проекты", icon: "💻" },
+    { to: "/leads", label: "CRM заявки", icon: "🎯" },
     { to: "/analytics", label: "Аналитика", icon: "📊" },
     { to: "/resources", label: "Ресурсы", icon: "🛠️" },
     { to: "/reports", label: "Отчеты", icon: "📋" },
-    { to: "/expense-reports", label: "Отчеты по расходам", icon: "💰" },
     { to: "/personal-expenses", label: "Мои расходы", icon: "💳" },
     { to: "/admin", label: "Админ панель", icon: "⚙️" },
   ]
