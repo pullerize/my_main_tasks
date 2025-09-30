@@ -17,6 +17,7 @@ function Users() {
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<User | null>(null)
   const [telegramUsername, setTelegramUsername] = useState('')
+  const [telegramId, setTelegramId] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('designer')
@@ -38,6 +39,7 @@ function Users() {
   const openAdd = () => {
     setEditing(null)
     setTelegramUsername('')
+    setTelegramId('')
     setName('')
     setPassword('')
     setRole('designer')
@@ -50,6 +52,7 @@ function Users() {
     
     setEditing(u)
     setTelegramUsername(u.telegram_username)
+    setTelegramId(u.telegram_id?.toString() || '')
     setName(u.name)
     setPassword('')
     setRole(u.role)
@@ -58,6 +61,7 @@ function Users() {
 
   const save = async () => {
     const payload: any = { telegram_username: telegramUsername, name, role }
+    if (telegramId) payload.telegram_id = parseInt(telegramId)
     if (password) payload.password = password
     if (editing) {
       await fetch(`${API_URL}/users/${editing.id}`, {
@@ -93,11 +97,27 @@ function Users() {
 
   const deleteUser = async (user: User) => {
     if (confirm(`Вы уверены, что хотите удалить пользователя "${user.name}"?`)) {
-      await fetch(`${API_URL}/users/${user.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      load()
+      try {
+        const response = await fetch(`${API_URL}/users/${user.id}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          alert(result.message || 'Пользователь успешно удален')
+          load() // Обновляем список только при успешном удалении
+        } else if (response.status === 404) {
+          alert('Пользователь уже был удален')
+          load() // Обновляем список, так как пользователя нет
+        } else {
+          const error = await response.json()
+          alert(`Ошибка при удалении пользователя: ${error.detail || 'Неизвестная ошибка'}`)
+        }
+      } catch (error) {
+        console.error('Error deleting user:', error)
+        alert('Ошибка сети при удалении пользователя')
+      }
     }
   }
 
@@ -105,7 +125,6 @@ function Users() {
     const roleMap: { [key: string]: string } = {
       'designer': 'Дизайнер',
       'smm_manager': 'СММ-менеджер',
-      'digital': 'Digital отдел',
       'admin': 'Администратор',
       'inactive': 'Неактивный'
     }
@@ -128,7 +147,7 @@ function Users() {
   }
 
   const getRoleOrder = () => {
-    return ['admin', 'digital', 'smm_manager', 'designer']
+    return ['admin', 'smm_manager', 'designer']
   }
 
   return (
@@ -272,7 +291,21 @@ function Users() {
                   Введите Telegram username без символа @
                 </p>
               </div>
-              
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Telegram ID</label>
+                <input
+                  type="number"
+                  className="border p-2 w-full rounded"
+                  value={telegramId}
+                  onChange={e => setTelegramId(e.target.value)}
+                  placeholder="123456789"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Telegram ID пользователя (получается из бота при первом запуске /start)
+                </p>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Имя</label>
                 <input 
@@ -303,7 +336,6 @@ function Users() {
                 >
                   <option value="designer">Дизайнер</option>
                   <option value="smm_manager">СММ-менеджер</option>
-                  <option value="digital">Digital отдел</option>
                   <option value="admin">Администратор</option>
                 </select>
               </div>

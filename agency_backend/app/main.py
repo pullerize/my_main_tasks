@@ -1,21 +1,21 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, status, Body
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, status, Body, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import FileResponse, HTMLResponse
-from sqlalchemy.orm import Session
+from starlette.middleware.base import BaseHTTPMiddleware
+from sqlalchemy.orm import Session, joinedload, sessionmaker
 from sqlalchemy import inspect, text, create_engine
 from dotenv import load_dotenv
 from datetime import datetime, date, timedelta, time as datetime_time
 from typing import List, Optional
-from sqlalchemy.orm import joinedload
 import os
-from fastapi.staticfiles import StaticFiles
 import json
 import shutil
 import tempfile
 import re
 import threading
 import time
+from fastapi.staticfiles import StaticFiles
 
 from . import models, schemas, crud, auth
 from .database import engine, Base, SessionLocal
@@ -26,9 +26,9 @@ load_dotenv()
 # Create tables including new expense models
 try:
     Base.metadata.create_all(bind=engine)
-    print("✅ Database tables created successfully")
+    print("[OK] Database tables created successfully")
 except Exception as e:
-    print(f"⚠️  Warning: Error creating database tables: {e}")
+    print(f"[WARN] Error creating database tables: {e}")
 
 # Ensure expense tables exist
 def ensure_expense_tables():
@@ -39,28 +39,28 @@ def ensure_expense_tables():
         tables = inspector.get_table_names()
         
         if "expense_categories" not in tables:
-            print("📋 Creating expense_categories table...")
+            print("[DB] Creating expense_categories table...")
             models.ExpenseCategory.__table__.create(bind=engine, checkfirst=True)
-            
+
         if "common_expenses" not in tables:
-            print("💰 Creating common_expenses table...")
+            print("[DB] Creating common_expenses table...")
             models.CommonExpense.__table__.create(bind=engine, checkfirst=True)
-        
+
         # Add new columns to existing project_expenses if they don't exist
         if "project_expenses" in tables:
             cols = [c["name"] for c in inspector.get_columns("project_expenses")]
-            
+
             if "category_id" not in cols:
-                print("🔧 Adding category_id to project_expenses...")
+                print("[DB] Adding category_id to project_expenses...")
                 conn.execute(text("ALTER TABLE project_expenses ADD COLUMN category_id INTEGER"))
             if "description" not in cols:
-                print("📝 Adding description to project_expenses...")
+                print("[DB] Adding description to project_expenses...")
                 conn.execute(text("ALTER TABLE project_expenses ADD COLUMN description TEXT"))
             if "date" not in cols:
-                print("📅 Adding date to project_expenses...")
+                print("[DB] Adding date to project_expenses...")
                 conn.execute(text("ALTER TABLE project_expenses ADD COLUMN date DATE DEFAULT CURRENT_DATE"))
             if "created_by" not in cols:
-                print("👤 Adding created_by to project_expenses...")
+                print("[DB] Adding created_by to project_expenses...")
                 conn.execute(text("ALTER TABLE project_expenses ADD COLUMN created_by INTEGER"))
             if "amount" in cols:
                 # Check if amount is still INTEGER, convert to FLOAT
@@ -263,13 +263,15 @@ def ensure_task_columns():
             ("recurrence_type", "VARCHAR"),
             ("recurrence_time", "VARCHAR"),
             ("recurrence_days", "VARCHAR"),
-            ("next_run_at", "DATETIME")
+            ("next_run_at", "DATETIME"),
+            ("original_task_id", "INTEGER"),
+            ("overdue_count", "INTEGER DEFAULT 0")
         ]
         
         for col_name, col_type in columns_to_add:
             if col_name not in cols:
                 conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_type}"))
-                print(f"✅ Added {col_name} column to tasks table")
+                print(f"[OK] Added {col_name} column to tasks table")
         
         conn.commit()
 
@@ -288,7 +290,7 @@ def recurring_tasks_scheduler():
     while True:
         try:
             current_time = datetime.now()
-            print(f"🕐 Recurring tasks check: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"[CRON] Recurring tasks check: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
             
             # Создаем новую сессию базы данных для планировщика
             db = SessionLocal()
@@ -309,38 +311,37 @@ def recurring_tasks_scheduler():
                 print(f"🔍 Query filter: next_run_at <= '{current_time}'")
                 
                 for template_task in due_tasks:
-                    print(f"🔄 Generating recurring task: {template_task.title}")
-                    
-                    # Создаем копию задачи (теперь тоже повторяющуюся!)
-                    new_task = models.Task(
-                        title=template_task.title,
-                        description=template_task.description,
-                        project=template_task.project,
-                        deadline=template_task.deadline,
-                        executor_id=template_task.executor_id,
-                        author_id=template_task.author_id,
-                        task_type=template_task.task_type,
-                        task_format=template_task.task_format,
-                        high_priority=template_task.high_priority,
-                        created_at=models.get_local_time_utc5(),
-                        status=models.TaskStatus.new,
-                        is_recurring=template_task.is_recurring,  # Копии тоже повторяющиеся
-                        recurrence_type=template_task.recurrence_type,
-                        recurrence_time=template_task.recurrence_time,
-                        recurrence_days=template_task.recurrence_days,
-                        next_run_at=crud.calculate_next_run_at(template_task.recurrence_type.value, db, template_task.recurrence_time, template_task.recurrence_days)
-                    )
-                    
-                    db.add(new_task)
-                    
-                    # Обновляем next_run_at для следующего повтора шаблона
+                    print(f"🔄 Regenerating recurring task: {template_task.title}")
+
+                    # Сохраняем информацию о том, была ли задача завершена
+                    was_completed = template_task.status == models.TaskStatus.done
+
+                    if was_completed:
+                        print(f"[OK] Task was completed, resetting to new status")
+                    elif template_task.status in [models.TaskStatus.new, models.TaskStatus.in_progress]:
+                        print(f"⏰ Task was not completed, incrementing overdue count")
+                        # Увеличиваем счетчик просрочек
+                        template_task.overdue_count = (template_task.overdue_count or 0) + 1
+
+                    # Сбрасываем задачу в исходное состояние
+                    template_task.status = models.TaskStatus.new
+                    template_task.created_at = models.get_local_time_utc5()
+                    template_task.accepted_at = None
+                    template_task.finished_at = None
+                    template_task.resume_count = 0
+
+                    # Обновляем next_run_at для следующего повтора
                     template_task.next_run_at = crud.calculate_next_run_at(template_task.recurrence_type.value, db, template_task.recurrence_time, template_task.recurrence_days)
-                    
-                    print(f"✅ Created recurring task: {template_task.title}, next run: {template_task.next_run_at}")
+
+                    print(f"[OK] Reset recurring task to new status: {template_task.title}, next run: {template_task.next_run_at}")
+                    if was_completed:
+                        print(f"📈 Task was completed successfully, ready for next iteration")
+                    else:
+                        print(f"[WARN] Task was overdue, count: {template_task.overdue_count}")
                 
                 if due_tasks:
                     db.commit()
-                    print(f"📝 Generated {len(due_tasks)} recurring tasks")
+                    print(f"[INFO] Reset {len(due_tasks)} recurring tasks to new status")
                 else:
                     print("📭 No recurring tasks due")
                     
@@ -357,9 +358,11 @@ def recurring_tasks_scheduler():
         time.sleep(30)  # Ждем 30 секунд до следующей проверки (для тестирования)
 
 # Запуск планировщика повторяющихся задач в фоновом потоке
-scheduler_thread = threading.Thread(target=recurring_tasks_scheduler, daemon=True)
-scheduler_thread.start()
-print("🚀 Recurring tasks scheduler started")
+# ВРЕМЕННО ОТКЛЮЧЕНО из-за проблем с схемой БД
+# scheduler_thread = threading.Thread(target=recurring_tasks_scheduler, daemon=True)
+# scheduler_thread.start()
+# print("[START] Recurring tasks scheduler started")
+print("[INFO] Recurring tasks scheduler is disabled")
 
 
 def create_default_admin():
@@ -477,7 +480,7 @@ def create_sample_expenses():
                     db.add(expense)
             
             db.commit()
-            print("✅ Sample expenses created")
+            print("[OK] Sample expenses created")
     except Exception as e:
         print(f"Warning: Could not create sample expenses: {e}")
         db.rollback()
@@ -516,6 +519,29 @@ app.add_middleware(
     max_age=3600,
 )
 
+# Additional middleware to ensure CORS headers on error responses
+class CORSErrorMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        try:
+            response = await call_next(request)
+            return response
+        except Exception as e:
+            # Ensure CORS headers are present on error responses
+            response = Response(
+                content='{"detail":"Internal server error"}',
+                status_code=500,
+                media_type="application/json"
+            )
+            origin = request.headers.get('origin')
+            if origin and origin in allowed_origins:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+                response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+                response.headers["Access-Control-Allow-Headers"] = "*"
+            return response
+
+app.add_middleware(CORSErrorMiddleware)
+
 
 @app.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(auth.get_db)):
@@ -537,6 +563,9 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
             "user_id": user.id,
             "name": user.name
         }
+    except HTTPException:
+        # Re-raise HTTPExceptions (like 401) as-is
+        raise
     except Exception as e:
         print(f"Login error: {e}")
         raise HTTPException(
@@ -587,8 +616,22 @@ def update_user(user_id: int, user: schemas.UserUpdate, db: Session = Depends(au
 def delete_user(user_id: int, db: Session = Depends(auth.get_db), current: models.User = Depends(auth.get_current_active_user)):
     if current.role != models.RoleEnum.admin:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    crud.delete_user(db, user_id)
-    return {"ok": True}
+
+    # Проверяем, что пользователь не пытается удалить сам себя
+    if current.id == user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+
+    # Проверяем, что пользователь существует
+    user = crud.get_user(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        crud.delete_user(db, user_id)
+        return {"ok": True, "message": f"User '{user.name}' deleted successfully"}
+    except Exception as e:
+        print(f"Error deleting user {user_id}: {str(e)}")  # Логирование для отладки
+        raise HTTPException(status_code=500, detail=f"Error deleting user: {str(e)}")
 
 
 @app.put("/users/{user_id}/toggle-status")
@@ -713,6 +756,35 @@ def check_telegram_user_status(
             has_access=False,
             user=None,
             message="Доступ к боту отсутствует. Обратитесь к администратору."
+        )
+
+
+@app.post("/telegram/auto-auth", response_model=schemas.TelegramAuthResponse)
+def auto_authorize_telegram_user(
+    request: schemas.TelegramAuthRequest,
+    db: Session = Depends(auth.get_db)
+):
+    """API endpoint для автоматической привязки telegram пользователя"""
+
+    user = crud.find_and_link_telegram_user(
+        db,
+        request.telegram_id,
+        request.username,
+        request.first_name,
+        request.last_name
+    )
+
+    if user:
+        return schemas.TelegramAuthResponse(
+            success=True,
+            message=f"Успешная авторизация! Добро пожаловать, {user.name}",
+            user=user
+        )
+    else:
+        return schemas.TelegramAuthResponse(
+            success=False,
+            message="Пользователь не найден в системе. Обратитесь к администратору для получения доступа.",
+            user=None
         )
 
 
@@ -863,7 +935,7 @@ def update_task_priority(
     elif current.role == models.RoleEnum.smm_manager:
         if task.executor_id:
             executor = db.query(models.User).filter(models.User.id == task.executor_id).first()
-            if executor and executor.role in [models.RoleEnum.designer, models.RoleEnum.smm_manager, models.RoleEnum.digital]:
+            if executor and executor.role in [models.RoleEnum.designer, models.RoleEnum.smm_manager]:
                 can_modify = True
         # Также SMM менеджеры могут изменять созданные ими задачи
         if task.author_id == current.id:
@@ -881,6 +953,86 @@ def update_task_priority(
     db.commit()
     db.refresh(task)
     return task
+
+
+# Task types and formats endpoints
+@app.get("/tasks/types")
+def get_task_types(
+    role: str = None,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_active_user)
+):
+    """Получить типы задач по роли"""
+    task_types = {
+        'designer': [
+            {'name': 'Motion', 'icon': '🎞️'},
+            {'name': 'Статика', 'icon': '🖼️'},
+            {'name': 'Видео', 'icon': '🎬'},
+            {'name': 'Карусель', 'icon': '🖼️'},
+            {'name': 'Другое', 'icon': '📌'}
+        ],
+        'smm_manager': [
+            {'name': 'Публикация', 'icon': '[INFO]'},
+            {'name': 'Контент план', 'icon': '[INFO]'},
+            {'name': 'Отчет', 'icon': '📊'},
+            {'name': 'Съемка', 'icon': '📹'},
+            {'name': 'Встреча', 'icon': '🤝'},
+            {'name': 'Стратегия', 'icon': '📈'},
+            {'name': 'Презентация', 'icon': '🎤'},
+            {'name': 'Админ задачи', 'icon': '🗂️'},
+            {'name': 'Анализ', 'icon': '🔎'},
+            {'name': 'Брифинг', 'icon': '[DB]'},
+            {'name': 'Сценарий', 'icon': '📜'},
+            {'name': 'Другое', 'icon': '📌'}
+        ],
+        'digital': [
+            {'name': 'Настройка рекламы', 'icon': '🎯'},
+            {'name': 'Анализ эффективности', 'icon': '📈'},
+            {'name': 'A/B тестирование', 'icon': '🧪'},
+            {'name': 'Настройка аналитики', 'icon': '📊'},
+            {'name': 'Оптимизация конверсий', 'icon': '[DB]'},
+            {'name': 'Email-маркетинг', 'icon': '📧'},
+            {'name': 'Контекстная реклама', 'icon': '🔍'},
+            {'name': 'Таргетированная реклама', 'icon': '🎯'},
+            {'name': 'SEO оптимизация', 'icon': '🔍'},
+            {'name': 'Веб-аналитика', 'icon': '📊'},
+            {'name': 'Другое', 'icon': '📌'}
+        ],
+        'admin': [
+            {'name': 'Публикация', 'icon': '[INFO]'},
+            {'name': 'Съемки', 'icon': '🎥'},
+            {'name': 'Стратегия', 'icon': '📈'},
+            {'name': 'Отчет', 'icon': '📊'},
+            {'name': 'Бухгалтерия', 'icon': '[DB]'},
+            {'name': 'Встреча', 'icon': '🤝'},
+            {'name': 'Документы', 'icon': '📄'},
+            {'name': 'Работа с кадрами', 'icon': '👥'},
+            {'name': 'Планерка', 'icon': '🗓️'},
+            {'name': 'Администраторские задачи', 'icon': '🛠️'},
+            {'name': 'Собеседование', 'icon': '🧑‍💼'},
+            {'name': 'Договор', 'icon': '✍️'},
+            {'name': 'Другое', 'icon': '📌'}
+        ]
+    }
+
+    if role:
+        return task_types.get(role, [])
+    return task_types
+
+
+@app.get("/tasks/formats")
+def get_task_formats(
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_active_user)
+):
+    """Получить форматы задач для дизайнеров"""
+    return [
+        {'name': '9:16', 'icon': '📱'},
+        {'name': '1:1', 'icon': '🔲'},
+        {'name': '4:5', 'icon': '🖼️'},
+        {'name': '16:9', 'icon': '🎞️'},
+        {'name': 'Другое', 'icon': '📌'}
+    ]
 
 
 @app.get("/operators/", response_model=list[schemas.Operator])
@@ -1324,7 +1476,7 @@ def list_shootings(db: Session = Depends(auth.get_db), current: models.User = De
 
 
 def _shoot_perm(user: models.User):
-    return user.role in [models.RoleEnum.smm_manager, models.RoleEnum.head_smm, models.RoleEnum.admin]
+    return user.role in [models.RoleEnum.smm_manager, models.RoleEnum.admin]
 
 
 @app.post("/shootings/", response_model=schemas.Shooting)
@@ -1658,12 +1810,20 @@ def get_analytics(
     else:
         start_date = end_date - timedelta(days=30)
     
-    # Статистика задач
-    total_tasks = db.query(models.Task).count()
-    completed_tasks = db.query(models.Task).filter(models.Task.status == "done").count()
-    in_progress_tasks = db.query(models.Task).filter(models.Task.status == "in_progress").count()
+    # Статистика задач (исключаем экземпляры повторяющихся задач)
+    total_tasks = db.query(models.Task).filter(models.Task.original_task_id.is_(None)).count()
+    completed_tasks = db.query(models.Task).filter(
+        and_(models.Task.status == "done", models.Task.original_task_id.is_(None))
+    ).count()
+    in_progress_tasks = db.query(models.Task).filter(
+        and_(models.Task.status == "in_progress", models.Task.original_task_id.is_(None))
+    ).count()
     overdue_tasks = db.query(models.Task).filter(
-        and_(models.Task.deadline < datetime.utcnow(), models.Task.status != "done")
+        and_(
+            models.Task.deadline < datetime.utcnow(),
+            models.Task.status != "done",
+            models.Task.original_task_id.is_(None)
+        )
     ).count()
     
     # Статистика проектов
@@ -1683,7 +1843,8 @@ def get_analytics(
             and_(
                 models.Task.executor_id == user.id,
                 models.Task.status == "done",
-                models.Task.finished_at >= start_date
+                models.Task.finished_at >= start_date,
+                models.Task.original_task_id.is_(None)  # Исключаем повторяющиеся задачи
             )
         ).count()
         
@@ -1874,6 +2035,7 @@ def download_resource_file(
     )
 
 
+
 @app.get("/health")
 def health_check(db: Session = Depends(auth.get_db)):
     """Health check endpoint for Docker"""
@@ -1902,17 +2064,118 @@ async def import_database(
     db: Session = Depends(auth.get_db),
     current: models.User = Depends(auth.get_current_active_user),
 ):
-    """Импорт данных из загруженной БД с фильтрацией по ролям"""
+    """Импорт данных из загруженной БД с файлами"""
     if current.role != models.RoleEnum.admin:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    if not file.filename.endswith('.db'):
-        raise HTTPException(status_code=400, detail="Only .db files are allowed")
-    
-    # Сохраняем временный файл
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp_file:
-        shutil.copyfileobj(file.file, tmp_file)
-        tmp_path = tmp_file.name
+
+    if not file.filename or not (file.filename.endswith('.db') or file.filename.endswith('.zip')):
+        raise HTTPException(status_code=400, detail="Only .db or .zip files are allowed")
+
+    import zipfile
+
+    # Сохраняем текущую рабочую директорию и переходим в agency_backend
+    original_cwd = os.getcwd()
+
+    # Определяем папку agency_backend
+    app_dir = os.path.dirname(os.path.abspath(__file__))  # Папка app
+    backend_dir = os.path.dirname(app_dir)  # Папка agency_backend
+
+    print(f"Импорт: текущая директория: {original_cwd}")
+    print(f"Импорт: переходим в: {backend_dir}")
+    os.chdir(backend_dir)
+
+    tmp_path = None
+    tmp_dir = None
+
+    if file.filename.endswith('.zip'):
+        # Обрабатываем ZIP архив
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
+            shutil.copyfileobj(file.file, tmp_zip)
+            tmp_zip_path = tmp_zip.name
+
+        # Создаем временную папку для извлечения файлов
+        tmp_dir = tempfile.mkdtemp()
+
+        try:
+            with zipfile.ZipFile(tmp_zip_path, 'r') as zip_ref:
+                zip_ref.extractall(tmp_dir)
+
+            # Находим файл базы данных
+            db_files = []
+            for root, dirs, files in os.walk(tmp_dir):
+                for file_name in files:
+                    if file_name.endswith('.db'):
+                        db_files.append(os.path.join(root, file_name))
+
+            if not db_files:
+                raise HTTPException(status_code=400, detail="No .db file found in ZIP archive")
+
+            tmp_path = db_files[0]  # Используем первый найденный .db файл
+
+            # Восстанавливаем файлы из архива
+            print("Восстанавливаем файлы из архива...")
+            file_directories = [
+                "uploads/leads",      # CRM файлы заявок
+                "static/projects",    # логотипы проектов
+                "static/digital",     # логотипы digital проектов
+                "files",              # ресурсные файлы
+                "contracts"           # контракты пользователей
+            ]
+
+            restored_files = 0
+            for dir_path in file_directories:
+                # Пытаемся найти папки с учетом того, что экспорт мог быть сделан из корня проекта
+                possible_paths = [
+                    os.path.join(tmp_dir, dir_path),                    # uploads/leads
+                    os.path.join(tmp_dir, "agency_backend", dir_path),  # agency_backend/uploads/leads
+                ]
+
+                extracted_dir = None
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        extracted_dir = path
+                        print(f"Найдена папка: {path}")
+                        break
+
+                if extracted_dir:
+                    # Создаем целевую папку если её нет
+                    os.makedirs(dir_path, exist_ok=True)
+
+                    # Копируем файлы
+                    files_in_dir = 0
+                    for root, dirs, files in os.walk(extracted_dir):
+                        for file_name in files:
+                            src_file = os.path.join(root, file_name)
+                            # Вычисляем относительный путь от извлеченной папки
+                            rel_path = os.path.relpath(src_file, extracted_dir)
+                            dst_file = os.path.join(dir_path, rel_path)
+
+                            # Создаем папку назначения если нужно
+                            os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+
+                            # Копируем файл
+                            print(f"Копируем файл: {src_file} -> {dst_file}")
+                            shutil.copy2(src_file, dst_file)
+                            files_in_dir += 1
+                            restored_files += 1
+
+                    print(f"Восстановлено файлов из {dir_path}: {files_in_dir}")
+                else:
+                    print(f"Папка {dir_path} не найдена в архиве (проверены пути: {possible_paths})")
+
+            print(f"Всего файлов восстановлено: {restored_files}")
+
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=400, detail="Invalid ZIP file")
+        finally:
+            # Удаляем временный ZIP файл
+            if os.path.exists(tmp_zip_path):
+                os.remove(tmp_zip_path)
+    else:
+        # Обрабатываем обычный .db файл
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp_file:
+            shutil.copyfileobj(file.file, tmp_file)
+            tmp_path = tmp_file.name
     
     try:
         # Подключаемся к загруженной БД
@@ -1925,16 +2188,29 @@ async def import_database(
         if not available_tables:
             raise HTTPException(status_code=400, detail="Database file appears to be empty or corrupted")
         
-        source_session = Session(bind=source_engine)
+        SourceSession = sessionmaker(bind=source_engine)
+        source_session = SourceSession()
         
         imported_data = {
             "users": 0,
             "projects": 0,
+            "project_posts": 0,
             "tasks": 0,
             "digital_projects": 0,
             "operators": 0,
             "expense_items": 0,
-            "taxes": 0
+            "taxes": 0,
+            "leads": 0,
+            "lead_notes": 0,
+            "lead_attachments": 0,
+            "lead_history": 0,
+            "expense_categories": 0,
+            "project_expenses": 0,
+            "common_expenses": 0,
+            "project_client_expenses": 0,
+            "digital_project_expenses": 0,
+            "employee_expenses": 0,
+            "project_reports": 0
         }
         
         # Импортируем пользователей
@@ -1961,9 +2237,9 @@ async def import_database(
                         new_user = models.User(
                             telegram_username=username,
                             telegram_id=user_data.get('telegram_id'),
-                            name=user_data['name'],
-                            hashed_password=user_data['hashed_password'],
-                            role=user_data['role'],
+                            name=user_data.get('name', 'Unknown'),
+                            hashed_password=user_data.get('hashed_password', 'imported_user_password'),
+                            role=user_data.get('role', 'designer'),
                             birth_date=user_data.get('birth_date'),
                             contract_path=user_data.get('contract_path'),
                             is_active=user_data.get('is_active', True)
@@ -2043,7 +2319,73 @@ async def import_database(
                 print(f"Error importing projects: {e}")
                 db.rollback()
                 pass
-        
+
+        # Импортируем посты проектов
+        if "project_posts" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM project_posts")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(project_posts)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    post_data = dict(zip(columns, row))
+
+                    # Проверяем, что проект существует (используем project_mapping для маппинга ID)
+                    old_project_id = post_data.get('project_id')
+                    new_project_id = project_mapping.get(old_project_id, old_project_id)
+
+                    project = db.query(models.Project).filter(models.Project.id == new_project_id).first()
+                    if not project:
+                        print(f"Skipping post for non-existent project ID: {new_project_id}")
+                        continue
+
+                    # Парсим дату
+                    post_date = None
+                    if post_data.get('date'):
+                        try:
+                            post_date = datetime.fromisoformat(str(post_data['date']).replace('Z', '+00:00'))
+                        except ValueError:
+                            try:
+                                post_date = datetime.strptime(str(post_data['date']), '%Y-%m-%d')
+                            except ValueError:
+                                post_date = datetime.utcnow()
+
+                    # Создаем новый пост (проверяем на дубликаты по project_id + date)
+                    existing_post = db.query(models.ProjectPost).filter(
+                        models.ProjectPost.project_id == new_project_id,
+                        models.ProjectPost.date == post_date
+                    ).first()
+
+                    if not existing_post:
+                        # Validate enum values
+                        post_type = post_data.get('post_type', 'static')
+                        if post_type == 'story':  # Convert legacy 'story' to 'static'
+                            post_type = 'static'
+                        elif post_type not in ['video', 'static', 'carousel']:
+                            post_type = 'static'  # Default fallback
+
+                        status = post_data.get('status', 'in_progress')
+                        if status not in ['in_progress', 'cancelled', 'approved', 'overdue']:
+                            status = 'in_progress'  # Default fallback
+
+                        new_post = models.ProjectPost(
+                            project_id=new_project_id,
+                            date=post_date or datetime.utcnow(),
+                            posts_per_day=post_data.get('posts_per_day', 1),
+                            post_type=post_type,
+                            status=status
+                        )
+                        db.add(new_post)
+                        imported_data["project_posts"] += 1
+
+            except Exception as e:
+                print(f"Error importing project posts: {e}")
+                db.rollback()
+                pass
+
         # Определяем тип базы данных
         is_telegram_db = False
         is_app_export = False
@@ -2190,6 +2532,9 @@ async def import_database(
                             project_mapping[project_name] = existing_project.id
                 
                 # Теперь импортируем все задачи
+                # Находим разумных дефолтных пользователей
+                default_manager = db.query(models.User).filter(models.User.role == 'smm_manager').first()
+                default_designer = db.query(models.User).filter(models.User.role == 'designer').first()
                 default_admin = db.query(models.User).filter(models.User.role == 'admin').first()
                 
                 for row in rows:
@@ -2212,20 +2557,9 @@ async def import_database(
                     
                     # Автор обязателен, исполнитель может быть NULL
                     if not author_id:
-                        if default_admin:
-                            author_id = default_admin.id
-                        else:
-                            # Создаем дефолтного админа если его нет
-                            default_admin = models.User(
-                                login="imported_admin",
-                                name="Импортированный Админ",
-                                hashed_password='$2b$12$imported_user_needs_password_reset',
-                                role='admin'
-                            )
-                            db.add(default_admin)
-                            db.flush()
-                            author_id = default_admin.id
-                            imported_data["users"] += 1
+                        # Если нет автора - пропускаем задачу с предупреждением вместо назначения дефолтного
+                        print(f"[WARN] Пропускаем задачу '{task_data.get('description', '')[:30]}...' - не найден автор")
+                        continue
                     
                     # executor_id может быть NULL - это нормально (как в боте "Не назначать")
                     
@@ -2304,49 +2638,120 @@ async def import_database(
                 db.rollback()
                 pass
         
-        # Стандартный импорт задач для экспорта из приложения
-        elif is_app_export and "tasks" in available_tables:
+        # Создаем общий маппинг пользователей для любого импорта с таблицей users
+        user_mapping = {}  # old_id -> new_id
+        if "users" in available_tables:
+            # Получаем всех пользователей из импортированной БД
+            cursor = source_session.connection().connection.cursor()
+            cursor.execute("SELECT * FROM users")
+            user_rows = cursor.fetchall()
+
+            cursor.execute("PRAGMA table_info(users)")
+            user_columns = [col[1] for col in cursor.fetchall()]
+
+            print(f"Создаем маппинг пользователей: {len(user_rows)} пользователей")
+
+            for user_row in user_rows:
+                user_data = dict(zip(user_columns, user_row))
+                old_user_id = user_data.get('id')
+                username = user_data.get('telegram_username') or user_data.get('login')
+
+                if old_user_id and username:
+                    # Ищем пользователя в текущей БД по username
+                    existing_user = db.query(models.User).filter(models.User.telegram_username == username).first()
+                    if existing_user:
+                        user_mapping[old_user_id] = existing_user.id
+                        print(f"Маппинг пользователя: {old_user_id} -> {existing_user.id} ({username})")
+                    else:
+                        # Создаем недостающего пользователя
+                        user_name = user_data.get('name', username)
+                        user_role = user_data.get('role', 'designer')
+
+                        new_user = models.User(
+                            telegram_username=username,
+                            name=user_name,
+                            hashed_password='$2b$12$imported_user_needs_password_reset',
+                            role=user_role,
+                            is_active=True
+                        )
+                        db.add(new_user)
+                        db.flush()
+                        user_mapping[old_user_id] = new_user.id
+                        imported_data["users"] += 1
+                        print(f"Создан пользователь: {old_user_id} -> {new_user.id} ({username}, {user_name}, {user_role})")
+
+        # Улучшенный импорт задач с правильным маппингом пользователей для любой БД
+        if "tasks" in available_tables:
             try:
-                # Используем прямой SQL запрос для большей гибкости  
-                cursor = source_session.connection().connection.cursor()
+
+                # Получаем задачи из экспорта
                 cursor.execute("SELECT * FROM tasks")  # Импортируем все задачи из экспорта
                 rows = cursor.fetchall()
-                
+
                 # Получаем названия колонок
                 cursor.execute("PRAGMA table_info(tasks)")
                 columns = [col[1] for col in cursor.fetchall()]
-                
+
                 print(f"Импортируем задачи из экспорта приложения: {len(rows)} задач")
-                
+
                 for row in rows:
                     # Создаем словарь из строки
                     task_data = dict(zip(columns, row))
-                    
-                    # Находим автора и исполнителя по ID из экспорта
-                    author = None
-                    executor = None
-                    
+
+                    # Находим автора и исполнителя по ID из экспорта через маппинг
+                    author_id = None
+                    executor_id = None
+
                     if task_data.get('author_id'):
-                        # Ищем в импортированных пользователях или берем дефолтного админа
-                        author = db.query(models.User).filter(models.User.role == 'admin').first()
-                    
+                        old_author_id = task_data['author_id']
+                        author_id = user_mapping.get(old_author_id)
+                        if author_id:
+                            print(f"Найден автор: {old_author_id} -> {author_id}")
+                        else:
+                            print(f"Автор не найден для ID {old_author_id}")
+
                     if task_data.get('executor_id'):
-                        # Берем первого доступного пользователя или дефолтного
-                        executor = db.query(models.User).first()
-                    
-                    # Если не найдены пользователи, используем дефолтного админа
-                    if not author:
-                        author = db.query(models.User).filter(models.User.role == 'admin').first()
-                    if not executor:
-                        executor = author
-                    
-                    if author and executor:
+                        old_executor_id = task_data['executor_id']
+                        executor_id = user_mapping.get(old_executor_id)
+                        if executor_id:
+                            print(f"Найден исполнитель: {old_executor_id} -> {executor_id}")
+                        else:
+                            print(f"Исполнитель не найден для ID {old_executor_id}")
+
+                    # Если не найдены пользователи, пропускаем задачу с предупреждением
+                    if not author_id and task_data.get('author_id'):
+                        print(f"[WARN] Пропускаем задачу '{task_data.get('title', '')[:30]}...' - не найден автор с ID {task_data.get('author_id')}")
+                        continue
+
+                    if not executor_id and task_data.get('executor_id'):
+                        print(f"[WARN] Пропускаем задачу '{task_data.get('title', '')[:30]}...' - не найден исполнитель с ID {task_data.get('executor_id')}")
+                        continue
+
+                    # Если в исходной БД нет author_id/executor_id, используем разумные дефолты
+                    if not author_id and not task_data.get('author_id'):
+                        # Назначаем на первого доступного СММ менеджера
+                        default_manager = db.query(models.User).filter(models.User.role == 'smm_manager').first()
+                        if default_manager:
+                            author_id = default_manager.id
+                            print(f"Назначаем дефолтного менеджера как автора: {default_manager.telegram_username}")
+
+                    if not executor_id and not task_data.get('executor_id'):
+                        # Назначаем на первого доступного дизайнера или того же автора
+                        default_designer = db.query(models.User).filter(models.User.role == 'designer').first()
+                        if default_designer:
+                            executor_id = default_designer.id
+                            print(f"Назначаем дефолтного дизайнера как исполнителя: {default_designer.telegram_username}")
+                        elif author_id:
+                            executor_id = author_id
+                            print(f"Назначаем автора как исполнителя")
+
+                    if author_id and executor_id:
                         # Проверяем, не существует ли уже такая задача (по заголовку и дате)
                         existing_task = db.query(models.Task).filter(
                             models.Task.title == task_data['title'],
                             models.Task.created_at == task_data.get('created_at')
                         ).first()
-                        
+
                         if not existing_task:
                             # Парсим даты
                             deadline = None
@@ -2358,7 +2763,7 @@ async def import_database(
                                         deadline = task_data['deadline']
                                 except:
                                     deadline = None
-                            
+
                             finished_at = None
                             if task_data.get('finished_at'):
                                 try:
@@ -2368,7 +2773,7 @@ async def import_database(
                                         finished_at = task_data['finished_at']
                                 except:
                                     finished_at = None
-                            
+
                             created_at = datetime.utcnow()
                             if task_data.get('created_at'):
                                 try:
@@ -2378,7 +2783,7 @@ async def import_database(
                                         created_at = task_data['created_at']
                                 except:
                                     created_at = datetime.utcnow()
-                            
+
                             # ВАЖНО: При импорте из экспорта приложения сохраняем проект КАК ЕСТЬ
                             # Не применяем фильтрацию по 15 проектам
                             new_task = models.Task(
@@ -2390,13 +2795,18 @@ async def import_database(
                                 task_type=task_data.get('task_type'),
                                 task_format=task_data.get('task_format'),
                                 high_priority=bool(task_data.get('high_priority', False)),
-                                author_id=author.id,
-                                executor_id=executor.id,
+                                author_id=author_id,
+                                executor_id=executor_id,
                                 finished_at=finished_at,
                                 created_at=created_at
                             )
                             db.add(new_task)
                             imported_data["tasks"] += 1
+                            print(f"Создана задача: '{task_data['title']}' автор_id={author_id}, исполнитель_id={executor_id}")
+                        else:
+                            print(f"Задача уже существует: '{task_data['title']}'")
+                    else:
+                        print(f"Пропускаем задачу '{task_data.get('title', 'БЕЗ НАЗВАНИЯ')}' - не найдены автор ({author_id}) или исполнитель ({executor_id})")
                             
             except Exception as e:
                 print(f"Error importing tasks: {e}")
@@ -2418,16 +2828,36 @@ async def import_database(
                     
                     # Находим проект и исполнителя
                     project_id = project_mapping.get(digital_data.get('project_id'))
-                    executor = db.query(models.User).first()  # Используем первого доступного пользователя
+
+                    # Используем правильный маппинг для исполнителя
+                    executor_id = None
+                    if digital_data.get('executor_id'):
+                        old_executor_id = digital_data['executor_id']
+                        executor_id = user_mapping.get(old_executor_id)
+                        if not executor_id:
+                            # Используем подходящего пользователя (дизайнер > СММ)
+                            default_designer = db.query(models.User).filter(models.User.role == 'designer').first()
+                            default_manager = db.query(models.User).filter(models.User.role == 'smm_manager').first()
+
+                            if default_designer:
+                                executor_id = default_designer.id
+                                print(f"Назначаем дефолтного дизайнера для digital_project: {default_designer.telegram_username}")
+                            elif default_manager:
+                                executor_id = default_manager.id
+                                print(f"Назначаем дефолтного менеджера для digital_project: {default_manager.telegram_username}")
+                            else:
+                                print(f"[WARN] Пропускаем digital_project - не найден исполнитель с ID {old_executor_id}")
+                                continue
+
                     service = db.query(models.DigitalService).first()  # Используем первый доступный сервис
-                    
-                    if project_id and executor:
+
+                    if project_id and executor_id:
                         # Проверяем, не существует ли уже такой цифровой проект
                         existing = db.query(models.DigitalProject).filter(
                             models.DigitalProject.project_id == project_id,
-                            models.DigitalProject.executor_id == executor.id
+                            models.DigitalProject.executor_id == executor_id
                         ).first()
-                        
+
                         if not existing:
                             # Парсим дату deadline
                             deadline = None
@@ -2439,11 +2869,11 @@ async def import_database(
                                         deadline = digital_data['deadline']
                                 except:
                                     deadline = None
-                            
+
                             new_digital = models.DigitalProject(
                                 project_id=project_id,
                                 service_id=service.id if service else None,
-                                executor_id=executor.id,
+                                executor_id=executor_id,
                                 deadline=deadline,
                                 monthly=bool(digital_data.get('monthly', False)),
                                 logo=digital_data.get('logo'),
@@ -2451,6 +2881,7 @@ async def import_database(
                             )
                             db.add(new_digital)
                             imported_data["digital_projects"] += 1
+                            print(f"Создан цифровой проект: project_id={project_id}, исполнитель_id={executor_id}")
             except Exception as e:
                 print(f"Error importing digital projects: {e}")
                 db.rollback()
@@ -2533,27 +2964,626 @@ async def import_database(
                 print(f"Error importing taxes: {e}")
                 db.rollback()
                 pass
-        
+
+        # Импортируем CRM заявки (leads)
+        lead_mapping = {}  # old_lead_id -> new_lead_id
+        if "leads" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM leads")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(leads)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    lead_data = dict(zip(columns, row))
+
+                    # Парсим даты
+                    created_at = None
+                    if lead_data.get('created_at'):
+                        try:
+                            if isinstance(lead_data['created_at'], str):
+                                created_at = datetime.fromisoformat(lead_data['created_at'].replace(' ', 'T'))
+                            else:
+                                created_at = lead_data['created_at']
+                        except:
+                            created_at = None
+
+                    # Проверяем, существует ли заявка
+                    # Проверяем по ID, если есть, или по уникальной комбинации
+                    existing = None
+                    if lead_data.get('phone') and lead_data.get('email'):
+                        existing = db.query(models.Lead).filter(
+                            models.Lead.client_contact == lead_data.get('phone')
+                        ).first()
+                        if not existing:
+                            existing = db.query(models.Lead).filter(
+                                models.Lead.client_contact == lead_data.get('email')
+                            ).first()
+                    elif lead_data.get('id'):
+                        existing = db.query(models.Lead).filter(models.Lead.id == lead_data.get('id')).first()
+
+                    if not existing:
+                        # Обработка дат для этапа КП
+                        proposal_date = None
+                        if lead_data.get('proposal_date'):
+                            try:
+                                if isinstance(lead_data['proposal_date'], str):
+                                    proposal_date = datetime.fromisoformat(lead_data['proposal_date'].replace(' ', 'T'))
+                                else:
+                                    proposal_date = lead_data['proposal_date']
+                            except:
+                                proposal_date = None
+
+                        # Обработка даты напоминания
+                        reminder_date = None
+                        if lead_data.get('reminder_date'):
+                            try:
+                                if isinstance(lead_data['reminder_date'], str):
+                                    reminder_date = datetime.fromisoformat(lead_data['reminder_date'].replace(' ', 'T'))
+                                else:
+                                    reminder_date = lead_data['reminder_date']
+                            except:
+                                reminder_date = None
+
+                        # Обработка даты начала ожидания
+                        waiting_started_at = None
+                        if lead_data.get('waiting_started_at'):
+                            try:
+                                if isinstance(lead_data['waiting_started_at'], str):
+                                    waiting_started_at = datetime.fromisoformat(lead_data['waiting_started_at'].replace(' ', 'T'))
+                                else:
+                                    waiting_started_at = lead_data['waiting_started_at']
+                            except:
+                                waiting_started_at = None
+
+                        # Обработка updated_at
+                        updated_at = None
+                        if lead_data.get('updated_at'):
+                            try:
+                                if isinstance(lead_data['updated_at'], str):
+                                    updated_at = datetime.fromisoformat(lead_data['updated_at'].replace(' ', 'T'))
+                                else:
+                                    updated_at = lead_data['updated_at']
+                            except:
+                                updated_at = None
+
+                        # Обработка last_activity_at
+                        last_activity_at = None
+                        if lead_data.get('last_activity_at'):
+                            try:
+                                if isinstance(lead_data['last_activity_at'], str):
+                                    last_activity_at = datetime.fromisoformat(lead_data['last_activity_at'].replace(' ', 'T'))
+                                else:
+                                    last_activity_at = lead_data['last_activity_at']
+                            except:
+                                last_activity_at = None
+
+                        new_lead = models.Lead(
+                            title=lead_data.get('title', lead_data.get('company_name', 'Импортированная заявка')),
+                            source=lead_data.get('source', 'import'),
+                            status=lead_data.get('status', 'new'),
+                            manager_id=lead_data.get('assigned_to_id', lead_data.get('manager_id')),
+
+                            # Основные поля
+                            client_name=lead_data.get('contact_person', lead_data.get('client_name')),
+                            client_contact=lead_data.get('phone', lead_data.get('email', lead_data.get('client_contact'))),
+                            company_name=lead_data.get('company_name'),
+                            description=lead_data.get('description'),
+
+                            # Поля для этапа КП
+                            proposal_amount=float(lead_data.get('proposal_amount', 0)) if lead_data.get('proposal_amount') else None,
+                            proposal_date=proposal_date,
+
+                            # Поля для финального этапа
+                            deal_amount=float(lead_data.get('deal_amount', 0)) if lead_data.get('deal_amount') else None,
+                            rejection_reason=lead_data.get('rejection_reason'),
+
+                            # Даты и таймеры
+                            created_at=created_at or datetime.utcnow(),
+                            updated_at=updated_at or datetime.utcnow(),
+                            last_activity_at=last_activity_at or datetime.utcnow(),
+                            reminder_date=reminder_date,
+                            waiting_started_at=waiting_started_at
+                        )
+                        db.add(new_lead)
+                        db.flush()  # Чтобы получить ID новой заявки
+
+                        # Сохраняем соответствие старого и нового ID
+                        old_lead_id = lead_data.get('id')
+                        if old_lead_id:
+                            lead_mapping[old_lead_id] = new_lead.id
+                            print(f"Маппинг заявки: {old_lead_id} -> {new_lead.id}")
+
+                        imported_data["leads"] += 1
+            except Exception as e:
+                print(f"Error importing leads: {e}")
+                db.rollback()
+                pass
+
+        # Импортируем заметки к заявкам
+        if "lead_notes" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM lead_notes")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(lead_notes)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    note_data = dict(zip(columns, row))
+
+                    # Находим соответствующую заявку через маппинг
+                    old_lead_id = note_data.get('lead_id')
+                    new_lead_id = lead_mapping.get(old_lead_id, old_lead_id)  # Используем старый ID как fallback
+
+                    lead = db.query(models.Lead).filter(models.Lead.id == new_lead_id).first()
+                    if lead:
+                        created_at = None
+                        if note_data.get('created_at'):
+                            try:
+                                if isinstance(note_data['created_at'], str):
+                                    created_at = datetime.fromisoformat(note_data['created_at'].replace(' ', 'T'))
+                                else:
+                                    created_at = note_data['created_at']
+                            except:
+                                created_at = None
+
+                        new_note = models.LeadNote(
+                            lead_id=lead.id,
+                            user_id=note_data.get('user_id') or note_data.get('created_by_id'),
+                            content=note_data.get('content'),
+                            lead_status=note_data.get('lead_status'),
+                            created_at=created_at or datetime.utcnow()
+                        )
+                        db.add(new_note)
+                        imported_data["lead_notes"] += 1
+            except Exception as e:
+                print(f"Error importing lead notes: {e}")
+                db.rollback()
+                pass
+
+        # Импортируем категории расходов
+        if "expense_categories" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM expense_categories")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(expense_categories)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    category_data = dict(zip(columns, row))
+                    existing = db.query(models.ExpenseCategory).filter(
+                        models.ExpenseCategory.name == category_data.get('name')
+                    ).first()
+
+                    if not existing:
+                        new_category = models.ExpenseCategory(
+                            name=category_data.get('name'),
+                            description=category_data.get('description'),
+                            is_active=category_data.get('is_active', True)
+                        )
+                        db.add(new_category)
+                        imported_data["expense_categories"] += 1
+            except Exception as e:
+                print(f"Error importing expense categories: {e}")
+                db.rollback()
+                pass
+
+        # Импортируем расходы по проектам
+        if "project_expenses" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM project_expenses")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(project_expenses)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    expense_data = dict(zip(columns, row))
+
+                    # Парсим дату
+                    date = None
+                    if expense_data.get('date'):
+                        try:
+                            if isinstance(expense_data['date'], str):
+                                date = datetime.fromisoformat(expense_data['date'].replace(' ', 'T')).date()
+                            else:
+                                date = expense_data['date']
+                        except:
+                            date = None
+
+                    # Находим проект
+                    project = db.query(models.Project).filter(models.Project.id == expense_data.get('project_id')).first()
+                    if project:
+                        new_expense = models.ProjectExpense(
+                            project_id=project.id,
+                            category_id=expense_data.get('category_id'),
+                            name=expense_data.get('name', expense_data.get('description', 'Импортированный расход')),
+                            description=expense_data.get('description'),
+                            amount=float(expense_data.get('amount', 0)),
+                            date=date or datetime.utcnow().date(),
+                            created_by=expense_data.get('created_by_id')
+                        )
+                        db.add(new_expense)
+                        imported_data["project_expenses"] += 1
+            except Exception as e:
+                print(f"Error importing project expenses: {e}")
+                db.rollback()
+                pass
+
+        # Импортируем общие расходы
+        if "common_expenses" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM common_expenses")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(common_expenses)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    expense_data = dict(zip(columns, row))
+
+                    # Парсим дату
+                    date = None
+                    if expense_data.get('date'):
+                        try:
+                            if isinstance(expense_data['date'], str):
+                                date = datetime.fromisoformat(expense_data['date'].replace(' ', 'T')).date()
+                            else:
+                                date = expense_data['date']
+                        except:
+                            date = None
+
+                    new_expense = models.CommonExpense(
+                        category_id=expense_data.get('category_id'),
+                        name=expense_data.get('name', expense_data.get('description', 'Импортированный расход')),
+                        description=expense_data.get('description'),
+                        amount=float(expense_data.get('amount', 0)),
+                        date=date or datetime.utcnow().date(),
+                        created_by=expense_data.get('created_by_id')
+                    )
+                    db.add(new_expense)
+                    imported_data["common_expenses"] += 1
+            except Exception as e:
+                print(f"Error importing common expenses: {e}")
+                db.rollback()
+                pass
+
+        # Импортируем расходы по цифровым проектам
+        if "digital_project_expenses" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM digital_project_expenses")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(digital_project_expenses)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    expense_data = dict(zip(columns, row))
+
+                    # Парсим дату
+                    date = None
+                    if expense_data.get('date'):
+                        try:
+                            if isinstance(expense_data['date'], str):
+                                date = datetime.fromisoformat(expense_data['date'].replace(' ', 'T')).date()
+                            else:
+                                date = expense_data['date']
+                        except:
+                            date = None
+
+                    # Находим цифровой проект
+                    digital_project = db.query(models.DigitalProject).filter(
+                        models.DigitalProject.id == expense_data.get('digital_project_id')
+                    ).first()
+                    if digital_project:
+                        new_expense = models.DigitalProjectExpense(
+                            digital_project_id=digital_project.id,
+                            category_id=expense_data.get('category_id'),
+                            description=expense_data.get('description'),
+                            amount=float(expense_data.get('amount', 0)),
+                            date=date or datetime.utcnow().date(),
+                            receipt_path=expense_data.get('receipt_path'),
+                            notes=expense_data.get('notes')
+                        )
+                        db.add(new_expense)
+                        imported_data["digital_project_expenses"] += 1
+            except Exception as e:
+                print(f"Error importing digital project expenses: {e}")
+                db.rollback()
+                pass
+
+        # Импортируем расходы сотрудников
+        if "employee_expenses" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM employee_expenses")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(employee_expenses)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    expense_data = dict(zip(columns, row))
+
+                    # Парсим дату
+                    date = None
+                    if expense_data.get('date'):
+                        try:
+                            if isinstance(expense_data['date'], str):
+                                date = datetime.fromisoformat(expense_data['date'].replace(' ', 'T')).date()
+                            else:
+                                date = expense_data['date']
+                        except:
+                            date = None
+
+                    new_expense = models.EmployeeExpense(
+                        user_id=expense_data.get('employee_id'),
+                        name=expense_data.get('name', expense_data.get('description', 'Импортированный расход')),
+                        description=expense_data.get('description'),
+                        amount=float(expense_data.get('amount', 0)),
+                        date=date or datetime.utcnow().date(),
+                        project_id=expense_data.get('project_id')
+                    )
+                    db.add(new_expense)
+                    imported_data["employee_expenses"] += 1
+            except Exception as e:
+                print(f"Error importing employee expenses: {e}")
+                db.rollback()
+                pass
+
+        # Импортируем отчеты по проектам
+        if "project_reports" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM project_reports")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(project_reports)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    report_data = dict(zip(columns, row))
+
+                    # Парсим даты
+                    start_date = None
+                    end_date = None
+                    created_at = None
+
+                    if report_data.get('start_date'):
+                        try:
+                            if isinstance(report_data['start_date'], str):
+                                start_date = datetime.fromisoformat(report_data['start_date'].replace(' ', 'T')).date()
+                            else:
+                                start_date = report_data['start_date']
+                        except:
+                            start_date = None
+
+                    if report_data.get('end_date'):
+                        try:
+                            if isinstance(report_data['end_date'], str):
+                                end_date = datetime.fromisoformat(report_data['end_date'].replace(' ', 'T')).date()
+                            else:
+                                end_date = report_data['end_date']
+                        except:
+                            end_date = None
+
+                    if report_data.get('created_at'):
+                        try:
+                            if isinstance(report_data['created_at'], str):
+                                created_at = datetime.fromisoformat(report_data['created_at'].replace(' ', 'T'))
+                            else:
+                                created_at = report_data['created_at']
+                        except:
+                            created_at = None
+
+                    # Находим проект
+                    project = db.query(models.Project).filter(models.Project.id == report_data.get('project_id')).first()
+                    if project:
+                        # Получаем месяц и год из данных или используем текущие
+                        month = report_data.get('month', datetime.utcnow().month)
+                        year = report_data.get('year', datetime.utcnow().year)
+
+                        new_report = models.ProjectReport(
+                            project_id=project.id,
+                            month=month,
+                            year=year,
+                            contract_amount=int(report_data.get('contract_amount', 0)),
+                            receipts=int(report_data.get('receipts', 0))
+                        )
+                        db.add(new_report)
+                        imported_data["project_reports"] += 1
+            except Exception as e:
+                print(f"Error importing project reports: {e}")
+                db.rollback()
+                pass
+
+        # Импортируем вложения к заявкам
+        if "lead_attachments" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM lead_attachments")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(lead_attachments)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    attachment_data = dict(zip(columns, row))
+
+                    # Находим соответствующую заявку через маппинг
+                    old_lead_id = attachment_data.get('lead_id')
+                    new_lead_id = lead_mapping.get(old_lead_id, old_lead_id)  # Используем старый ID как fallback
+
+                    lead = db.query(models.Lead).filter(models.Lead.id == new_lead_id).first()
+                    if lead:
+                        uploaded_at = None
+                        if attachment_data.get('uploaded_at'):
+                            try:
+                                if isinstance(attachment_data['uploaded_at'], str):
+                                    uploaded_at = datetime.fromisoformat(attachment_data['uploaded_at'].replace(' ', 'T'))
+                                else:
+                                    uploaded_at = attachment_data['uploaded_at']
+                            except:
+                                uploaded_at = None
+
+                        new_attachment = models.LeadAttachment(
+                            lead_id=lead.id,
+                            filename=attachment_data.get('filename'),
+                            file_path=attachment_data.get('file_path'),
+                            file_size=attachment_data.get('file_size'),
+                            mime_type=attachment_data.get('mime_type'),
+                            uploaded_at=uploaded_at or datetime.utcnow(),
+                            user_id=attachment_data.get('user_id')
+                        )
+                        db.add(new_attachment)
+                        imported_data["lead_attachments"] += 1
+            except Exception as e:
+                print(f"Error importing lead attachments: {e}")
+                db.rollback()
+                pass
+
+        # Импортируем историю заявок
+        if "lead_history" in available_tables:
+            try:
+                cursor = source_session.connection().connection.cursor()
+                cursor.execute("SELECT * FROM lead_history")
+                rows = cursor.fetchall()
+
+                cursor.execute("PRAGMA table_info(lead_history)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                for row in rows:
+                    history_data = dict(zip(columns, row))
+
+                    # Находим соответствующую заявку через маппинг
+                    old_lead_id = history_data.get('lead_id')
+                    new_lead_id = lead_mapping.get(old_lead_id, old_lead_id)  # Используем старый ID как fallback
+
+                    lead = db.query(models.Lead).filter(models.Lead.id == new_lead_id).first()
+                    if lead:
+                        changed_at = None
+                        if history_data.get('changed_at'):
+                            try:
+                                if isinstance(history_data['changed_at'], str):
+                                    changed_at = datetime.fromisoformat(history_data['changed_at'].replace(' ', 'T'))
+                                else:
+                                    changed_at = history_data['changed_at']
+                            except:
+                                changed_at = None
+
+                        new_history = models.LeadHistory(
+                            lead_id=lead.id,
+                            user_id=history_data.get('user_id') or history_data.get('changed_by_id'),
+                            action=history_data.get('action') or history_data.get('field_name') or 'status_changed',
+                            old_value=history_data.get('old_value'),
+                            new_value=history_data.get('new_value'),
+                            description=history_data.get('description'),
+                            created_at=changed_at or datetime.utcnow()
+                        )
+                        db.add(new_history)
+                        imported_data["lead_history"] += 1
+            except Exception as e:
+                print(f"Error importing lead history: {e}")
+                db.rollback()
+                pass
+
         # Сохраняем изменения
         db.commit()
         
         # Закрываем сессию источника
         source_session.close()
         
+        # Update database version after successful import
+        try:
+            # Create or update database version record
+            version_timestamp = datetime.utcnow().isoformat()
+            version_record = db.query(models.DatabaseVersion).first()
+            if version_record:
+                version_record.version = version_timestamp
+                version_record.description = "Database imported"
+            else:
+                version_record = models.DatabaseVersion(
+                    version=version_timestamp,
+                    description="Database imported"
+                )
+                db.add(version_record)
+            db.commit()
+            print(f"🔄 Database version updated to: {version_timestamp}")
+        except Exception as e:
+            print(f"Warning: Could not update database version: {e}")
+
         return {
             "success": True,
             "message": "Database imported successfully",
             "imported": imported_data,
-            "available_tables": available_tables
+            "available_tables": available_tables,
+            "database_version": version_timestamp
         }
         
     except Exception as e:
+        print(f"Import database error: {e}")
+        import traceback
+        traceback.print_exc()
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
     finally:
-        # Удаляем временный файл
-        if os.path.exists(tmp_path):
+        # Закрываем источник сессии если она была создана
+        if 'source_session' in locals():
+            source_session.close()
+        # Удаляем временный файл БД
+        if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
+        # Удаляем временную папку если была создана
+        if tmp_dir and os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+        # Восстанавливаем рабочую директорию
+        os.chdir(original_cwd)
+        print(f"Импорт: восстановлена рабочая директория: {os.getcwd()}")
+
+
+# Database version endpoint (public, no auth required)
+@app.get("/database/version")
+async def get_database_version(db: Session = Depends(auth.get_db)):
+    """Get current database version for cache invalidation"""
+    try:
+        version_record = db.query(models.DatabaseVersion).first()
+        if version_record:
+            return {
+                "version": version_record.version,
+                "updated_at": version_record.updated_at.isoformat() if version_record.updated_at else None,
+                "description": version_record.description
+            }
+        else:
+            # If no version record exists, create one
+            initial_version = datetime.utcnow().isoformat()
+            version_record = models.DatabaseVersion(
+                version=initial_version,
+                description="Initial version"
+            )
+            db.add(version_record)
+            db.commit()
+            return {
+                "version": initial_version,
+                "updated_at": None,
+                "description": "Initial version"
+            }
+    except Exception as e:
+        print(f"Error getting database version: {e}")
+        # Return a fallback version based on current time
+        return {
+            "version": datetime.utcnow().isoformat(),
+            "updated_at": None,
+            "description": "Fallback version"
+        }
 
 
 @app.get("/admin/export-database")
@@ -2561,26 +3591,160 @@ async def export_database(
     db: Session = Depends(auth.get_db),
     current: models.User = Depends(auth.get_current_active_user),
 ):
-    """Экспорт текущей базы данных"""
+    """Экспорт текущей базы данных с файлами"""
     if current.role != models.RoleEnum.admin:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    # Путь к текущей БД
-    db_url = str(db.bind.url).replace('sqlite:///', '')
-    
-    if not os.path.exists(db_url):
-        raise HTTPException(status_code=404, detail="Database file not found")
-    
-    # Создаем имя файла с датой
+
     import datetime
+    import sqlite3
+    import tempfile
+    import zipfile
+    import glob
+
+    # Создаем временные файлы для экспорта
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"database_export_{timestamp}.db"
-    
-    return FileResponse(
-        path=db_url,
-        filename=filename,
-        media_type='application/octet-stream'
-    )
+    temp_dir = tempfile.gettempdir()
+    export_db_path = os.path.join(temp_dir, f"database_export_{timestamp}.db")
+    export_zip_path = os.path.join(temp_dir, f"database_export_{timestamp}.zip")
+
+    # Сохраняем текущую рабочую директорию и переходим в agency_backend
+    original_cwd = os.getcwd()
+
+    # Определяем папку agency_backend
+    app_dir = os.path.dirname(os.path.abspath(__file__))  # Папка app
+    backend_dir = os.path.dirname(app_dir)  # Папка agency_backend
+
+    print(f"Текущая директория: {original_cwd}")
+    print(f"Переходим в: {backend_dir}")
+    os.chdir(backend_dir)
+
+    try:
+        # Путь к текущей БД
+        source_db_url = str(db.bind.url).replace('sqlite:///', '')
+
+        if not os.path.exists(source_db_url):
+            raise HTTPException(status_code=404, detail="Database file not found")
+
+        # Подключаемся к текущей БД
+        source_conn = sqlite3.connect(source_db_url)
+
+        # Создаем новую БД для экспорта
+        export_conn = sqlite3.connect(export_db_path)
+
+        # Экспортируем схему и данные всех таблиц
+        print(f"Начинаем экспорт базы данных в {export_db_path}")
+
+        # Получаем список всех таблиц
+        tables_query = source_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in tables_query.fetchall()]
+
+        print(f"Найдено таблиц для экспорта: {len(tables)}")
+        print(f"Таблицы: {tables}")
+
+        # Экспортируем каждую таблицу
+        for table_name in tables:
+            if table_name.startswith('sqlite_'):
+                continue  # Пропускаем системные таблицы
+
+            print(f"Экспортируем таблицу: {table_name}")
+
+            # Получаем схему таблицы
+            schema_query = source_conn.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+            schema = schema_query.fetchone()
+
+            if schema and schema[0]:
+                # Создаем таблицу в новой БД
+                export_conn.execute(schema[0])
+
+                # Копируем данные
+                data_query = source_conn.execute(f"SELECT * FROM {table_name}")
+                rows = data_query.fetchall()
+
+                if rows:
+                    # Получаем информацию о столбцах
+                    columns_info = source_conn.execute(f"PRAGMA table_info({table_name})")
+                    columns = [col[1] for col in columns_info.fetchall()]
+
+                    # Формируем запрос для вставки
+                    placeholders = ','.join(['?' for _ in columns])
+                    insert_query = f"INSERT INTO {table_name} VALUES ({placeholders})"
+
+                    # Вставляем данные
+                    export_conn.executemany(insert_query, rows)
+                    print(f"Скопировано {len(rows)} строк в таблицу {table_name}")
+                else:
+                    print(f"Таблица {table_name} пуста")
+
+        # Сохраняем изменения
+        export_conn.commit()
+
+        # Закрываем соединения
+        source_conn.close()
+        export_conn.close()
+
+        print(f"Экспорт базы данных завершен: {export_db_path}")
+
+        # Создаем ZIP архив с БД и файлами
+        print("Создаем ZIP архив с файлами...")
+        with zipfile.ZipFile(export_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Добавляем базу данных
+            zipf.write(export_db_path, f"database_{timestamp}.db")
+            print("База данных добавлена в архив")
+
+            # Определяем папки с файлами для экспорта
+            file_directories = [
+                "uploads/leads",      # CRM файлы заявок
+                "static/projects",    # логотипы проектов
+                "static/digital",     # логотипы digital проектов
+                "files",              # ресурсные файлы
+                "contracts"           # контракты пользователей
+            ]
+
+            total_files = 0
+            for dir_path in file_directories:
+                if os.path.exists(dir_path):
+                    print(f"Архивируем папку: {dir_path}")
+                    for root, dirs, files in os.walk(dir_path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            # Сохраняем относительный путь в архиве
+                            arcname = os.path.relpath(file_path, '.')
+                            zipf.write(file_path, arcname)
+                            total_files += 1
+                    files_in_dir = 0
+                    for root, dirs, files in os.walk(dir_path):
+                        files_in_dir += len(files)
+                    print(f"Папка {dir_path}: добавлено {files_in_dir} файлов")
+                else:
+                    print(f"Папка {dir_path} не существует, пропускаем")
+
+            print(f"Всего файлов добавлено в архив: {total_files}")
+
+        # Удаляем временную БД
+        if os.path.exists(export_db_path):
+            os.remove(export_db_path)
+
+        print(f"Экспорт завершен успешно: {export_zip_path}")
+
+        filename = f"database_export_{timestamp}.zip"
+
+        return FileResponse(
+            path=export_zip_path,
+            filename=filename,
+            media_type='application/zip'
+        )
+
+    except Exception as e:
+        print(f"Ошибка при экспорте базы данных: {e}")
+        # Очищаем временные файлы при ошибке
+        for temp_file in [export_db_path, export_zip_path]:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+    finally:
+        # Восстанавливаем рабочую директорию
+        os.chdir(original_cwd)
+        print(f"Восстановлена рабочая директория: {os.getcwd()}")
 
 
 @app.post("/admin/clear-cache")
@@ -2588,17 +3752,166 @@ async def clear_global_cache(
     db: Session = Depends(auth.get_db),
     current: models.User = Depends(auth.get_current_active_user),
 ):
-    """Глобальная очистка кеша (только для администраторов)"""
+    """Глобальная очистка кеша и временных файлов (только для администраторов)"""
     if current.role != models.RoleEnum.admin:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    # В данном случае мы не можем очистить кеш браузеров пользователей
-    # но можем симулировать серверную очистку кеша
-    return {
-        "message": "Global cache cleared successfully",
-        "timestamp": datetime.now(),
-        "cleared_by": current.name
-    }
+
+    import os
+    import tempfile
+    import shutil
+    import time
+
+    cleared_items = []
+    total_space_freed = 0
+
+    try:
+        # 1. Очистка системного временного каталога
+        temp_dir = tempfile.gettempdir()
+        temp_files_count = 0
+        temp_space_freed = 0
+
+        for filename in os.listdir(temp_dir):
+            if filename.startswith('tmp') or filename.startswith('temp'):
+                file_path = os.path.join(temp_dir, filename)
+                try:
+                    if os.path.isfile(file_path):
+                        size = os.path.getsize(file_path)
+                        os.remove(file_path)
+                        temp_files_count += 1
+                        temp_space_freed += size
+                    elif os.path.isdir(file_path):
+                        size = sum(os.path.getsize(os.path.join(dirpath, filename))
+                                 for dirpath, dirnames, filenames in os.walk(file_path)
+                                 for filename in filenames)
+                        shutil.rmtree(file_path)
+                        temp_files_count += 1
+                        temp_space_freed += size
+                except (PermissionError, FileNotFoundError):
+                    pass
+
+        if temp_files_count > 0:
+            cleared_items.append(f"Временные файлы: {temp_files_count} файлов ({temp_space_freed / 1024 / 1024:.2f} МБ)")
+            total_space_freed += temp_space_freed
+
+        # 2. Очистка старых ZIP архивов экспорта (старше 24 часов)
+        export_files_count = 0
+        export_space_freed = 0
+
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+
+        for filename in os.listdir(current_dir):
+            if filename.endswith('.zip') and ('export' in filename.lower() or 'backup' in filename.lower()):
+                file_path = os.path.join(current_dir, filename)
+                try:
+                    # Проверяем возраст файла
+                    file_age = time.time() - os.path.getmtime(file_path)
+                    if file_age > 86400:  # 24 часа
+                        size = os.path.getsize(file_path)
+                        os.remove(file_path)
+                        export_files_count += 1
+                        export_space_freed += size
+                except (PermissionError, FileNotFoundError):
+                    pass
+
+        if export_files_count > 0:
+            cleared_items.append(f"Старые архивы: {export_files_count} файлов ({export_space_freed / 1024 / 1024:.2f} МБ)")
+            total_space_freed += export_space_freed
+
+        # 3. Очистка логов и кеша приложения (если есть)
+        log_files_count = 0
+        log_space_freed = 0
+
+        for log_pattern in ['*.log', '*.log.*', '__pycache__']:
+            if log_pattern == '__pycache__':
+                # Очистка Python кеша
+                for root, dirs, files in os.walk(current_dir):
+                    if '__pycache__' in dirs:
+                        cache_dir = os.path.join(root, '__pycache__')
+                        try:
+                            size = sum(os.path.getsize(os.path.join(dirpath, filename))
+                                     for dirpath, dirnames, filenames in os.walk(cache_dir)
+                                     for filename in filenames)
+                            shutil.rmtree(cache_dir)
+                            log_files_count += 1
+                            log_space_freed += size
+                        except (PermissionError, FileNotFoundError):
+                            pass
+            else:
+                # Очистка лог файлов
+                import glob
+                for log_file in glob.glob(os.path.join(current_dir, log_pattern)):
+                    try:
+                        size = os.path.getsize(log_file)
+                        os.remove(log_file)
+                        log_files_count += 1
+                        log_space_freed += size
+                    except (PermissionError, FileNotFoundError):
+                        pass
+
+        if log_files_count > 0:
+            cleared_items.append(f"Логи и кеш: {log_files_count} элементов ({log_space_freed / 1024 / 1024:.2f} МБ)")
+            total_space_freed += log_space_freed
+
+        # 4. Очистка неиспользуемых uploads (файлы без записей в БД)
+        uploads_cleaned = 0
+        uploads_space_freed = 0
+
+        uploads_dir = os.path.join(current_dir, 'uploads')
+        if os.path.exists(uploads_dir):
+            for root, dirs, files in os.walk(uploads_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    relative_path = os.path.relpath(file_path, uploads_dir)
+
+                    # Проверяем, есть ли файл в базе данных
+                    file_in_db = db.query(models.ResourceFile).filter(
+                        models.ResourceFile.file_path.like(f"%{file}")
+                    ).first()
+
+                    lead_attachment = db.query(models.LeadAttachment).filter(
+                        models.LeadAttachment.file_path.like(f"%{file}")
+                    ).first()
+
+                    if not file_in_db and not lead_attachment:
+                        try:
+                            # Файл не найден в БД, можно удалить
+                            file_age = time.time() - os.path.getmtime(file_path)
+                            if file_age > 7200:  # Старше 2 часов
+                                size = os.path.getsize(file_path)
+                                os.remove(file_path)
+                                uploads_cleaned += 1
+                                uploads_space_freed += size
+                        except (PermissionError, FileNotFoundError):
+                            pass
+
+        if uploads_cleaned > 0:
+            cleared_items.append(f"Неиспользуемые файлы: {uploads_cleaned} файлов ({uploads_space_freed / 1024 / 1024:.2f} МБ)")
+            total_space_freed += uploads_space_freed
+
+        if not cleared_items:
+            cleared_items.append("Кеш уже чист - ненужных файлов не найдено")
+
+        message = "Кеш успешно очищен!\n" + "\n".join(cleared_items)
+        if total_space_freed > 0:
+            message += f"\n\nВсего освобождено: {total_space_freed / 1024 / 1024:.2f} МБ"
+
+        return {
+            "message": message,
+            "timestamp": datetime.now(),
+            "cleared_by": current.name,
+            "space_freed_mb": round(total_space_freed / 1024 / 1024, 2),
+            "items_cleared": cleared_items
+        }
+
+    except Exception as e:
+        print(f"Error during cache clearing: {e}")
+        return {
+            "message": f"Частичная очистка кеша выполнена. Ошибка: {str(e)}",
+            "timestamp": datetime.now(),
+            "cleared_by": current.name,
+            "space_freed_mb": round(total_space_freed / 1024 / 1024, 2) if total_space_freed > 0 else 0,
+            "items_cleared": cleared_items if cleared_items else ["Очистка прервана из-за ошибки"]
+        }
 
 @app.delete("/admin/clear-database")
 async def clear_database(
@@ -2608,152 +3921,175 @@ async def clear_database(
     """Полная очистка базы данных (кроме текущего админа)"""
     if current.role != models.RoleEnum.admin:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     try:
-        # Счетчики для отчета
-        deleted_counts = {
-            "tasks": 0,
-            "projects": 0,
-            "users": 0,
-            "digital_projects": 0,
-            "operators": 0,
-            "expenses": 0,
-            "receipts": 0,
-            "shootings": 0,
-            "posts": 0,
-            "files": 0,
-            "taxes": 0,
-            "expense_items": 0
-        }
-        
-        # Безопасное удаление с проверкой существования моделей
-        
+        # Счетчики для отчета (упрощённая версия)
+        deleted_counts = {}
+
         # Удаляем задачи
         if hasattr(models, 'Task'):
-            deleted_counts["tasks"] = db.query(models.Task).count()
+            count = db.query(models.Task).count()
+            deleted_counts["tasks"] = count
             db.query(models.Task).delete()
-        
+
         # Удаляем посты проектов
         if hasattr(models, 'ProjectPost'):
-            deleted_counts["posts"] = db.query(models.ProjectPost).count()
+            count = db.query(models.ProjectPost).count()
+            deleted_counts["posts"] = count
             db.query(models.ProjectPost).delete()
-        
+
         # Удаляем съемки
         if hasattr(models, 'Shooting'):
-            deleted_counts["shootings"] = db.query(models.Shooting).count()
+            count = db.query(models.Shooting).count()
+            deleted_counts["shootings"] = count
             db.query(models.Shooting).delete()
-        
-        # Удаляем расходы и поступления
-        expenses_count = 0
+
+        # Удаляем все типы расходов
         if hasattr(models, 'ProjectExpense'):
-            expenses_count += db.query(models.ProjectExpense).count()
+            count = db.query(models.ProjectExpense).count()
+            deleted_counts["project_expenses"] = count
             db.query(models.ProjectExpense).delete()
+
         if hasattr(models, 'ProjectClientExpense'):
-            expenses_count += db.query(models.ProjectClientExpense).count()
+            count = db.query(models.ProjectClientExpense).count()
+            deleted_counts["project_client_expenses"] = count
             db.query(models.ProjectClientExpense).delete()
-        deleted_counts["expenses"] = expenses_count
-        
+
+        if hasattr(models, 'EmployeeExpense'):
+            count = db.query(models.EmployeeExpense).count()
+            deleted_counts["employee_expenses"] = count
+            db.query(models.EmployeeExpense).delete()
+
+        if hasattr(models, 'DigitalProjectExpense'):
+            count = db.query(models.DigitalProjectExpense).count()
+            deleted_counts["digital_project_expenses"] = count
+            db.query(models.DigitalProjectExpense).delete()
+
+        # Удаляем поступления
         if hasattr(models, 'ProjectReceipt'):
-            deleted_counts["receipts"] = db.query(models.ProjectReceipt).count()
+            count = db.query(models.ProjectReceipt).count()
+            deleted_counts["receipts"] = count
             db.query(models.ProjectReceipt).delete()
-        
-        # Удаляем отчеты
+
+        # Удаляем отчеты по проектам
         if hasattr(models, 'ProjectReport'):
+            count = db.query(models.ProjectReport).count()
+            deleted_counts["project_reports"] = count
             db.query(models.ProjectReport).delete()
-        
+
         # Удаляем цифровые проекты и связанные данные
         if hasattr(models, 'DigitalProjectTask'):
             db.query(models.DigitalProjectTask).delete()
         if hasattr(models, 'DigitalProjectFinance'):
             db.query(models.DigitalProjectFinance).delete()
-        if hasattr(models, 'DigitalProjectExpense'):
-            db.query(models.DigitalProjectExpense).delete()
         if hasattr(models, 'DigitalProject'):
-            deleted_counts["digital_projects"] = db.query(models.DigitalProject).count()
+            count = db.query(models.DigitalProject).count()
+            deleted_counts["digital_projects"] = count
             db.query(models.DigitalProject).delete()
         if hasattr(models, 'DigitalService'):
             db.query(models.DigitalService).delete()
-        
+
         # Удаляем проекты
         if hasattr(models, 'Project'):
-            deleted_counts["projects"] = db.query(models.Project).count()
+            count = db.query(models.Project).count()
+            deleted_counts["projects"] = count
             db.query(models.Project).delete()
-        
-        # Удаляем файлы ресурсов
-        if hasattr(models, 'ResourceFile'):
-            deleted_counts["files"] = db.query(models.ResourceFile).count()
-            # Удаляем физические файлы
-            files = db.query(models.ResourceFile).all()
-            for file in files:
-                if file.file_path and os.path.exists(file.file_path):
-                    try:
-                        os.remove(file.file_path)
-                    except:
-                        pass
-            db.query(models.ResourceFile).delete()
-        
-        # Удаляем операторов (используем прямой SQL для избежания проблем с кэшированием метаданных)
+
+        # Удаляем операторов
         if hasattr(models, 'Operator'):
-            try:
-                deleted_counts["operators"] = db.query(models.Operator).count()
-                db.query(models.Operator).delete()
-            except Exception as e:
-                # Если возникла ошибка с метаданными, используем прямой SQL
-                result = db.execute(text("SELECT COUNT(*) FROM operators"))
-                deleted_counts["operators"] = result.scalar()
-                db.execute(text("DELETE FROM operators"))
-        
-        # Удаляем категории расходов
-        if hasattr(models, 'ExpenseCategory'):
-            try:
-                deleted_counts["expense_categories"] = db.query(models.ExpenseCategory).count()
-                db.query(models.ExpenseCategory).delete()
-            except Exception as e:
-                result = db.execute(text("SELECT COUNT(*) FROM expense_categories"))
-                deleted_counts["expense_categories"] = result.scalar()
-                db.execute(text("DELETE FROM expense_categories"))
-        
-        # Удаляем общие расходы
-        if hasattr(models, 'CommonExpense'):
-            try:
-                deleted_counts["common_expenses"] = db.query(models.CommonExpense).count()
-                db.query(models.CommonExpense).delete()
-            except Exception as e:
-                result = db.execute(text("SELECT COUNT(*) FROM common_expenses"))
-                deleted_counts["common_expenses"] = result.scalar()
-                db.execute(text("DELETE FROM common_expenses"))
-        
-        # Удаляем налоги
-        if hasattr(models, 'Tax'):
-            deleted_counts["taxes"] = db.query(models.Tax).count()
-            db.query(models.Tax).delete()
-        
+            count = db.query(models.Operator).count()
+            deleted_counts["operators"] = count
+            db.query(models.Operator).delete()
+
+        # Удаляем заявки и связанные данные (используем прямые SQL запросы для таблиц с проблемами)
+        try:
+            # Удаляем историю заявок
+            db.execute(text("DELETE FROM lead_history"))
+            deleted_counts["lead_history"] = 0
+        except:
+            pass
+
+        try:
+            # Удаляем вложения заявок
+            db.execute(text("DELETE FROM lead_attachments"))
+            deleted_counts["lead_attachments"] = 0
+        except:
+            pass
+
+        try:
+            # Удаляем заметки заявок
+            db.execute(text("DELETE FROM lead_notes"))
+            deleted_counts["lead_notes"] = 0
+        except:
+            pass
+
+        try:
+            # Удаляем заявки
+            db.execute(text("DELETE FROM leads"))
+            deleted_counts["leads"] = 0
+        except:
+            pass
+
+        # Удаляем повторяющиеся задачи
+        try:
+            db.execute(text("DELETE FROM recurring_tasks"))
+            deleted_counts["recurring_tasks"] = 0
+        except:
+            pass
+
         # Удаляем всех пользователей кроме текущего админа
         if hasattr(models, 'User'):
-            deleted_counts["users"] = db.query(models.User).filter(models.User.id != current.id).count()
+            count = db.query(models.User).filter(models.User.id != current.id).count()
+            deleted_counts["users"] = count
             db.query(models.User).filter(models.User.id != current.id).delete()
-        
+
         # Удаляем настройки (кроме timezone)
         if hasattr(models, 'Setting'):
             db.query(models.Setting).filter(
                 models.Setting.key.notin_(["timezone"])
             ).delete()
-        
+
+        # Очищаем все папки с файлами
+        file_directories = [
+            "uploads/leads",
+            "static/projects",
+            "static/digital",
+            "files",
+            "contracts"
+        ]
+
+        cleared_files = 0
+        for dir_path in file_directories:
+            if os.path.exists(dir_path):
+                try:
+                    for root, dirs, files in os.walk(dir_path):
+                        for file_name in files:
+                            file_path = os.path.join(root, file_name)
+                            try:
+                                os.remove(file_path)
+                                cleared_files += 1
+                            except:
+                                pass
+                except:
+                    pass
+
+        deleted_counts["files"] = cleared_files
+
         # Сохраняем изменения
         db.commit()
-        
+
         # Пересоздаем дефолтные налоги
         if hasattr(crud, 'create_tax'):
             crud.create_tax(db, "ЯТТ", 0.95)
             crud.create_tax(db, "ООО", 0.83)
             crud.create_tax(db, "Нал", 1.0)
-        
+
         return {
             "success": True,
             "message": "Database cleared successfully",
             "deleted": deleted_counts
         }
-        
+
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Clear failed: {str(e)}")
@@ -3398,7 +4734,8 @@ def get_employee_expenses(
     from sqlalchemy.orm import joinedload
 
     query = db.query(models.EmployeeExpense).options(
-        joinedload(models.EmployeeExpense.project)
+        joinedload(models.EmployeeExpense.project),
+        joinedload(models.EmployeeExpense.user)
     )
 
     if user_id:
@@ -3815,6 +5152,19 @@ def delete_lead(
 
 
 # Заметки к заявкам
+@app.get("/leads/{lead_id}/notes/", response_model=List[schemas.LeadNote])
+def get_lead_notes(
+    lead_id: int,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_user)
+):
+    """Получить список заметок к заявке"""
+    notes = db.query(models.LeadNote).filter(models.LeadNote.lead_id == lead_id).options(
+        joinedload(models.LeadNote.user)
+    ).order_by(models.LeadNote.created_at.desc()).all()
+    return notes
+
+
 @app.post("/leads/{lead_id}/notes/", response_model=schemas.LeadNote)
 def add_lead_note(
     lead_id: int,
@@ -3946,6 +5296,88 @@ def get_service_types_analytics(
         employee_id=employee_id
     )
     return analytics
+
+
+@app.get("/analytics/recurring-tasks")
+def get_recurring_tasks_analytics(
+    time_range: str = "30d",
+    employee_id: Optional[int] = None,
+    db: Session = Depends(auth.get_db),
+    current: models.User = Depends(auth.get_current_active_user),
+):
+    """Получение аналитики по повторяющимся задачам"""
+    from datetime import datetime, timedelta
+    from sqlalchemy import func, and_
+
+    # Определяем период для анализа
+    end_date = datetime.utcnow()
+    if time_range == "7d":
+        start_date = end_date - timedelta(days=7)
+    elif time_range == "30d":
+        start_date = end_date - timedelta(days=30)
+    elif time_range == "90d":
+        start_date = end_date - timedelta(days=90)
+    elif time_range == "1y":
+        start_date = end_date - timedelta(days=365)
+    else:
+        start_date = end_date - timedelta(days=30)
+
+    # Базовый фильтр для повторяющихся задач (только экземпляры)
+    base_filter = and_(
+        models.Task.original_task_id.isnot(None),
+        models.Task.created_at >= start_date,
+        models.Task.created_at <= end_date
+    )
+
+    # Дополнительный фильтр по сотруднику
+    if employee_id:
+        base_filter = and_(base_filter, models.Task.executor_id == employee_id)
+
+    # Статистика повторяющихся задач
+    total_recurring_instances = db.query(models.Task).filter(base_filter).count()
+    completed_recurring = db.query(models.Task).filter(
+        and_(base_filter, models.Task.status == "done")
+    ).count()
+    in_progress_recurring = db.query(models.Task).filter(
+        and_(base_filter, models.Task.status == "in_progress")
+    ).count()
+
+    # Статистика по типам задач среди повторяющихся
+    task_types_stats = db.query(
+        models.Task.task_type,
+        func.count(models.Task.id).label('count')
+    ).filter(base_filter).group_by(models.Task.task_type).all()
+
+    # Статистика по исполнителям
+    executor_stats = db.query(
+        models.User.name,
+        func.count(models.Task.id).label('total_tasks'),
+        func.sum(func.case((models.Task.status == 'done', 1), else_=0)).label('completed_tasks')
+    ).join(models.Task, models.Task.executor_id == models.User.id)\
+     .filter(base_filter)\
+     .group_by(models.User.id, models.User.name).all()
+
+    # Количество активных повторяющихся шаблонов
+    active_templates = db.query(models.Task).filter(
+        models.Task.is_recurring == True,
+        models.Task.next_run_at.isnot(None)
+    ).count()
+
+    return {
+        "total_recurring_instances": total_recurring_instances,
+        "completed_recurring": completed_recurring,
+        "in_progress_recurring": in_progress_recurring,
+        "active_templates": active_templates,
+        "task_types": [{"type": stat.task_type, "count": stat.count} for stat in task_types_stats if stat.task_type],
+        "executors": [
+            {
+                "name": stat.name,
+                "total_tasks": stat.total_tasks,
+                "completed_tasks": stat.completed_tasks,
+                "completion_rate": round((stat.completed_tasks / stat.total_tasks * 100) if stat.total_tasks > 0 else 0, 1)
+            } for stat in executor_stats
+        ]
+    }
 
 
 # =============================================================================

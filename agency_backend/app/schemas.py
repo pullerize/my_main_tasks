@@ -5,6 +5,7 @@ from pydantic import BaseModel, field_validator, ConfigDict
 
 class UserBase(BaseModel):
     telegram_username: Optional[str] = None  # Изменили с login на telegram_username
+    telegram_id: Optional[int] = None  # Telegram ID пользователя
     name: str
     role: str
     birth_date: Optional[DateType] = None
@@ -14,6 +15,7 @@ class UserCreate(UserBase):
 
 class UserUpdate(BaseModel):
     telegram_username: Optional[str] = None  # Изменили с login на telegram_username
+    telegram_id: Optional[int] = None  # Telegram ID пользователя
     name: Optional[str] = None
     password: Optional[str] = None
     role: Optional[str] = None

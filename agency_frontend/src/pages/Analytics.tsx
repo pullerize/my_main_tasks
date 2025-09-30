@@ -493,7 +493,7 @@ function Analytics() {
     return periods
   }
 
-  // Подготавливаем данные для общей гистограммы типов услуг
+  // Подготавливаем данные для общей гистограммы типов задач
   const prepareServiceChartData = () => {
     if (!serviceAnalytics) return []
 
@@ -745,10 +745,10 @@ function Analytics() {
         </div>
       </div>
 
-      {/* Аналитика по типам услуг */}
+      {/* Аналитика по типам задач */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6">
-          <h3 className="text-lg font-semibold text-gray-900">Аналитика по типам услуг</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Аналитика по типам задач</h3>
           <div className="mt-2 sm:mt-0 flex gap-2">
             <input
               type="date"
@@ -799,7 +799,7 @@ function Analytics() {
                     <Activity className="h-6 w-6 text-green-600" />
                   </div>
                   <div className="ml-4">
-                    <p className="text-sm font-medium text-gray-600">Типов услуг</p>
+                    <p className="text-sm font-medium text-gray-600">Типов задач</p>
                     <p className="text-2xl font-bold text-gray-900">{serviceAnalytics.total_service_types.length}</p>
                   </div>
                 </div>
@@ -837,24 +837,29 @@ function Analytics() {
             {/* Основная гистограмма */}
             <div className="bg-gray-50 rounded-lg">
               <h4 className="text-lg font-semibold text-gray-900 p-4">
-                Статистика по типам услуг
+                Статистика по типам задач
               </h4>
               <div className="p-4">
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={prepareServiceChartData()} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                <ResponsiveContainer width="100%" height={400}>
+                  <BarChart data={prepareServiceChartData()} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
                       dataKey="service_type"
                       angle={-45}
                       textAnchor="end"
-                      height={80}
+                      height={100}
                     />
                     <YAxis />
                     <Tooltip
                       formatter={(value, name) => [value, name]}
-                      labelFormatter={(label) => `Тип услуги: ${label}`}
+                      labelFormatter={(label) => `Тип задачи: ${label}`}
                     />
-                    <Legend />
+                    <Legend
+                      verticalAlign="bottom"
+                      height={50}
+                      iconType="rect"
+                      wrapperStyle={{ paddingTop: '50px' }}
+                    />
                     <Bar dataKey="Создано" fill="#3B82F6" name="Создано задач" stroke="#1E40AF" strokeWidth={1} />
                     <Bar dataKey="Завершено" fill="#10B981" name="Завершено задач" stroke="#047857" strokeWidth={1} />
                   </BarChart>
@@ -863,12 +868,12 @@ function Analytics() {
 
               {/* Табличное представление данных */}
               <div className="p-4 border-t">
-                <h5 className="text-md font-semibold text-gray-800 mb-3">Детальная статистика по типам услуг</h5>
+                <h5 className="text-md font-semibold text-gray-800 mb-3">Детальная статистика по типам задач</h5>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b">
-                        <th className="text-left py-2 px-3 font-medium text-gray-600">Тип услуги</th>
+                        <th className="text-left py-2 px-3 font-medium text-gray-600">Тип задачи</th>
                         <th className="text-center py-2 px-3 font-medium text-gray-600">Создано</th>
                         <th className="text-center py-2 px-3 font-medium text-gray-600">Завершено</th>
                         <th className="text-center py-2 px-3 font-medium text-gray-600">Эффективность</th>
@@ -946,7 +951,7 @@ function Analytics() {
           </div>
         ) : (
           <div className="text-center py-8">
-            <p className="text-gray-500">Загрузка аналитики по типам услуг...</p>
+            <p className="text-gray-500">Загрузка аналитики по типам задач...</p>
           </div>
         )}
       </div>

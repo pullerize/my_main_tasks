@@ -3,6 +3,7 @@ import { useSidebar } from '../contexts/SidebarContext'
 import { useState, useEffect } from 'react'
 import { API_URL } from '../api'
 import { clearAllFilters } from '../utils/filterStorage'
+import { isAdmin } from '../utils/roleUtils'
 
 function Navbar() {
   const navigate = useNavigate()
@@ -35,48 +36,35 @@ function Navbar() {
     loadUserName()
   }, [])
 
-  // Auto refresh functionality - DISABLED for debugging
-  useEffect(() => {
-    // DEBUG Navbar: Auto-refresh disabled for debugging
-    // const interval = setInterval(() => {
-    //   // Сохраняем текущий путь перед обновлением
-    //   localStorage.setItem('lastVisitedPath', location.pathname)
-    //   window.location.reload()
-    // }, 30000) // Обновление каждые 30 секунд
-
-    // return () => {
-    //   clearInterval(interval)
-    // }
-  }, [location.pathname])
 
   const clearCache = async () => {
-    if (isAdmin) {
-      // Глобальная очистка кеша для администратора
-      try {
-        const token = localStorage.getItem('token')
-        const response = await fetch(`${API_URL}/admin/clear-cache`, {
-          method: 'POST',
-          headers: { 
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        })
-        
-        if (response.ok) {
-          alert('✅ Глобальный кеш успешно очищен для всех пользователей!')
-        } else {
-          // Fallback to local cache clearing if server doesn't support global clearing
-          console.warn('Global cache clearing not supported, falling back to local clearing')
-          localCacheClear()
+    // Только для администраторов - очистка серверного кеша и локальных данных
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/admin/clear-cache`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
         }
-      } catch (error) {
-        console.error('Failed to clear global cache:', error)
-        // Fallback to local cache clearing
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        // Также очищаем локальный кеш браузера
         localCacheClear()
+        alert(`✅ Кеш успешно очищен!\n${result.message || 'Временные файлы и кеш приложения очищены.'}`)
+      } else {
+        // Fallback to local cache clearing if server error
+        console.warn('Server cache clearing failed, clearing local cache only')
+        localCacheClear()
+        alert('⚠️ Серверный кеш недоступен, очищен только локальный кеш браузера')
       }
-    } else {
-      // Локальная очистка кеша для обычных пользователей
+    } catch (error) {
+      console.error('Failed to clear cache:', error)
+      // Fallback to local cache clearing
       localCacheClear()
+      alert('⚠️ Ошибка соединения с сервером, очищен только локальный кеш браузера')
     }
   }
 
@@ -131,19 +119,13 @@ function Navbar() {
   // })
   
   // Role-based permissions system
-  const isAdmin = role && (
-    role.toLowerCase() === 'admin' || 
-    role.toLowerCase() === 'administrator' ||
-    role === 'ADMIN'
-  )
+  const userIsAdmin = isAdmin(role)
   
   const isDesigner = role === 'designer'
   const isSmmManager = role === 'smm_manager'
-  const isDigital = role === 'digital'
-  const isHeadSmm = role === 'head_smm'
   
   // console.log('DEBUG: Role checks:', { 
-  //   isAdmin, 
+  //   userIsAdmin,
   //   isDesigner, 
   //   isSmmManager, 
   //   isDigital, 
@@ -212,7 +194,7 @@ function Navbar() {
 
   // Определяем меню в зависимости от роли
   const getMenuItems = () => {
-    if (isAdmin) return adminMenuItems
+    if (userIsAdmin) return adminMenuItems
     if (isDesigner) return designerMenuItems
     if (isSmmManager || isHeadSmm) return smmManagerMenuItems
     if (isDigital) return digitalMenuItems
@@ -223,7 +205,7 @@ function Navbar() {
   const menuItems = getMenuItems()
   
   // console.log('DEBUG: Selected menu items:', menuItems.map(item => item.label))
-  // console.log('DEBUG: Using admin menu?', isAdmin)
+  // console.log('DEBUG: Using admin menu?', userIsAdmin)
 
   return (
     <>
@@ -295,9 +277,7 @@ function Navbar() {
                   <div className="text-xs text-indigo-200">
                     {role === 'admin' ? 'Администратор' : 
                      role === 'designer' ? 'Дизайнер' :
-                     role === 'smm_manager' ? 'СММ-менеджер' :
-                     role === 'digital' ? 'Digital специалист' :
-                     role === 'head_smm' ? 'Главный СММ' : 'Сотрудник'}
+                     role === 'smm_manager' ? 'СММ-менеджер' : 'Сотрудник'}
                   </div>
                 </div>
               )}
@@ -313,22 +293,24 @@ function Navbar() {
 
       {/* Action Buttons - Fixed to bottom of screen */}
       <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-700/50 bg-gradient-to-b from-slate-900 via-gray-900 to-slate-900 space-y-2">
-        {/* Clear Cache Button */}
-        <button 
-          onClick={clearCache}
-          className={`
-            w-full flex items-center text-sm font-medium rounded-xl
-            ${isCollapsed ? 'px-3 py-3 justify-center' : 'px-4 py-3'}
-            bg-orange-600/20 hover:bg-orange-600 text-orange-200 hover:text-white 
-            border border-orange-600/50 hover:border-orange-600 
-            transition-all duration-300 ease-in-out hover:shadow-lg hover:shadow-orange-500/25 
-            transform hover:scale-105
-          `}
-          title={isCollapsed ? "Очистить кеш" : undefined}
-        >
-          <span className={`text-lg ${isCollapsed ? '' : 'mr-3'}`}>🗑️</span>
-          {!isCollapsed && <span>Очистить кеш</span>}
-        </button>
+        {/* Clear Cache Button - Only for admins */}
+        {userIsAdmin && (
+          <button
+            onClick={clearCache}
+            className={`
+              w-full flex items-center text-sm font-medium rounded-xl
+              ${isCollapsed ? 'px-3 py-3 justify-center' : 'px-4 py-3'}
+              bg-orange-600/20 hover:bg-orange-600 text-orange-200 hover:text-white
+              border border-orange-600/50 hover:border-orange-600
+              transition-all duration-300 ease-in-out hover:shadow-lg hover:shadow-orange-500/25
+              transform hover:scale-105
+            `}
+            title={isCollapsed ? "Очистить кеш" : undefined}
+          >
+            <span className={`text-lg ${isCollapsed ? '' : 'mr-3'}`}>🗑️</span>
+            {!isCollapsed && <span>Очистить кеш</span>}
+          </button>
+        )}
 
         {/* Logout Button */}
         <button 

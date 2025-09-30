@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../api'
+import { isAdmin } from '../utils/roleUtils'
 
 function formatInput(value: string) {
   const digits = value.replace(/\D/g, '')
@@ -57,11 +58,7 @@ function PersonalExpenses() {
   
   const token = localStorage.getItem('token')
   const role = localStorage.getItem('role')
-  const isAdmin = role && (
-    role.toLowerCase() === 'admin' || 
-    role.toLowerCase() === 'administrator' ||
-    role === 'ADMIN'
-  )
+  const userIsAdmin = isAdmin(role)
 
   const loadExpenses = async () => {
     if (!token) {
@@ -85,7 +82,7 @@ function PersonalExpenses() {
   }
 
   const loadCompanyExpenses = async () => {
-    if (!token || !isAdmin) {
+    if (!token || !userIsAdmin) {
       setCompanyExpenses([])
       return
     }
@@ -130,7 +127,7 @@ function PersonalExpenses() {
   useEffect(() => {
     loadExpenses()
     loadProjects()
-    if (isAdmin) {
+    if (userIsAdmin) {
       loadCompanyExpenses()
     }
   }, [])
@@ -243,7 +240,7 @@ function PersonalExpenses() {
             <div>
               <h1 className="text-2xl font-light text-gray-900">Мои расходы</h1>
               <p className="text-sm text-gray-500 mt-1">
-                {isAdmin ? 'Личные и корпоративные расходы' : 'Личные расходы'}
+                {userIsAdmin ? 'Личные и корпоративные расходы' : 'Личные расходы'}
               </p>
             </div>
             <button 
@@ -259,7 +256,7 @@ function PersonalExpenses() {
         </div>
 
         {/* Admin Tabs */}
-        {isAdmin && (
+        {userIsAdmin && (
           <div className="mb-8">
             <div className="bg-white rounded-lg p-1 shadow-sm border border-gray-200 inline-flex">
               <button

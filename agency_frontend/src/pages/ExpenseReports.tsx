@@ -42,6 +42,10 @@ interface EmployeeExpense {
   description?: string;
   date: string;
   user_id: number;
+  project_id?: number;
+  created_at?: string;
+  user?: User;
+  project?: Project;
 }
 
 interface EmployeeExpenseReport {
@@ -135,6 +139,8 @@ const ExpenseReports: React.FC = () => {
   const [operatorTableExpanded, setOperatorTableExpanded] = useState(true);
   const [projectTableExpanded, setProjectTableExpanded] = useState(true);
   const [companyTableExpanded, setCompanyTableExpanded] = useState(true);
+  const [selectedExpense, setSelectedExpense] = useState<any>(null);
+  const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [newExpense, setNewExpense] = useState({
     name: '',
     amount: '',
@@ -151,9 +157,7 @@ const ExpenseReports: React.FC = () => {
     { value: '', label: 'Все роли' },
     { value: 'admin', label: 'Администратор' },
     { value: 'smm_manager', label: 'SMM менеджер' },
-    { value: 'head_smm', label: 'Главный SMM' },
     { value: 'designer', label: 'Дизайнер' },
-    { value: 'digital', label: 'Digital' },
   ];
 
   function getCurrentMonthStart() {
@@ -268,7 +272,9 @@ const ExpenseReports: React.FC = () => {
       setSummary(await summaryRes.json());
       setEmployeeReports(await employeesRes.json());
       setOperatorReports(await operatorsRes.json());
-      setCommonExpenses(await commonExpensesRes.json());
+      const commonExpensesData = await commonExpensesRes.json();
+      console.log('Common expenses data:', commonExpensesData);
+      setCommonExpenses(commonExpensesData);
 
       // Group project expenses by project
       const projectExpensesData = await projectExpensesRes.json();
@@ -280,6 +286,7 @@ const ExpenseReports: React.FC = () => {
 
       // Set employee expenses with project info
       const employeeExpensesData = await employeeExpensesRes.json();
+      console.log('Employee expenses data:', employeeExpensesData);
       setEmployeeExpensesWithProject(employeeExpensesData.filter((expense: EmployeeExpense) =>
         selectedProject ? expense.project_id === selectedProject : expense.project_id
       ));
@@ -424,6 +431,135 @@ const ExpenseReports: React.FC = () => {
     }).format(amount);
   };
 
+  const handleExpenseClick = (expense: any, type: 'employee' | 'project' | 'common') => {
+    console.log('Expense clicked:', expense, 'Type:', type);
+    setSelectedExpense({ ...expense, type });
+    setShowExpenseModal(true);
+    console.log('Modal should show now, selectedExpense:', { ...expense, type }, 'showModal:', true);
+  };
+
+  const closeExpenseModal = () => {
+    setShowExpenseModal(false);
+    setSelectedExpense(null);
+  };
+
+  const ExpenseDetailModal = () => {
+    console.log('ExpenseDetailModal render check:', { selectedExpense, showExpenseModal });
+    console.log('ExpenseDetailModal - selectedExpense type:', typeof selectedExpense);
+    console.log('ExpenseDetailModal - showExpenseModal type:', typeof showExpenseModal);
+
+    if (!selectedExpense || !showExpenseModal) {
+      console.log('ExpenseDetailModal - not rendering because:', {
+        hasSelectedExpense: !!selectedExpense,
+        showModal: showExpenseModal
+      });
+      return null;
+    }
+
+    console.log('ExpenseDetailModal - rendering modal');
+
+    return (
+      <div
+        className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999]"
+        onClick={closeExpenseModal}
+      >
+        <div
+          className="bg-white rounded-lg p-6 max-w-md w-full mx-4 relative z-[10000]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Подробная информация о расходе</h3>
+            <button
+              onClick={closeExpenseModal}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Название</label>
+              <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{selectedExpense.name}</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Сумма</label>
+              <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{formatCurrency(selectedExpense.amount)}</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Дата</label>
+              <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">
+                {new Date(selectedExpense.date).toLocaleDateString('ru-RU')}
+              </p>
+            </div>
+
+            {selectedExpense.description && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Описание</label>
+                <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{selectedExpense.description}</p>
+              </div>
+            )}
+
+            {selectedExpense.type === 'employee' && selectedExpense.user && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Сотрудник</label>
+                <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{selectedExpense.user.name}</p>
+              </div>
+            )}
+
+            {selectedExpense.type === 'employee' && selectedExpense.project && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Проект</label>
+                <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{selectedExpense.project.name}</p>
+              </div>
+            )}
+
+            {selectedExpense.type === 'project' && selectedExpense.project_name && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Проект</label>
+                <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{selectedExpense.project_name}</p>
+              </div>
+            )}
+
+            {selectedExpense.category_name && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Категория</label>
+                <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{selectedExpense.category_name}</p>
+              </div>
+            )}
+
+            {selectedExpense.creator_name && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Создал</label>
+                <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{selectedExpense.creator_name}</p>
+              </div>
+            )}
+
+            {selectedExpense.created_at && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Дата создания</label>
+                <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">
+                  {new Date(selectedExpense.created_at).toLocaleString('ru-RU')}
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-6 flex justify-end">
+            <button
+              onClick={closeExpenseModal}
+              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              Закрыть
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   if (loading) {
     return (
       <div className="p-6">
@@ -444,13 +580,32 @@ const ExpenseReports: React.FC = () => {
         <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
           <div className="flex justify-between items-center mb-6">
             <h1 className="text-2xl font-bold text-gray-900">Отчеты по расходам</h1>
-            <button
-              onClick={exportToCSV}
-              className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
-            >
-              <Download size={16} />
-              Экспорт CSV
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  console.log('Test modal button clicked');
+                  setSelectedExpense({
+                    id: 999,
+                    name: 'Тестовый расход',
+                    amount: 1000,
+                    date: '2024-01-01',
+                    description: 'Тестовое описание',
+                    type: 'test'
+                  });
+                  setShowExpenseModal(true);
+                }}
+                className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                🧪 Тест модалки
+              </button>
+              <button
+                onClick={exportToCSV}
+                className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
+              >
+                <Download size={16} />
+                Экспорт CSV
+              </button>
+            </div>
           </div>
 
           {/* Main Tabs */}
@@ -717,7 +872,14 @@ const ExpenseReports: React.FC = () => {
                 </div>
 
                 <div className="border border-gray-200 rounded-lg p-6">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Расходы сотрудников</h2>
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                    Расходы сотрудников ({employeeExpensesWithProject.length})
+                  </h2>
+                  <div className="mb-2 text-xs text-gray-500">
+                    Debug: employeeExpensesWithProject.length = {employeeExpensesWithProject.length}<br/>
+                    Debug: selectedProject = {selectedProject}<br/>
+                    Debug: loading = {loading.toString()}
+                  </div>
                   <div className="space-y-4">
                     {employeeExpensesWithProject.length === 0 ? (
                       <p className="text-center text-gray-500 py-4">
@@ -725,7 +887,17 @@ const ExpenseReports: React.FC = () => {
                       </p>
                     ) : (
                       employeeExpensesWithProject.map((expense) => (
-                        <div key={expense.id} className="flex justify-between items-center p-4 border border-gray-200 rounded-lg">
+                        <div
+                          key={expense.id}
+                          className="flex justify-between items-center p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-colors"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            console.log('Employee expense clicked:', expense);
+                            handleExpenseClick(expense, 'employee');
+                          }}
+                          style={{ minHeight: '60px' }}
+                        >
                           <div>
                             <h3 className="font-medium">{expense.name}</h3>
                             <p className="text-sm text-gray-600">
@@ -752,8 +924,12 @@ const ExpenseReports: React.FC = () => {
           <div className="bg-white rounded-lg shadow-sm p-6">
             <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2 mb-6">
               <span className="text-orange-500">🏢</span>
-              Общие расходы организации
+              Общие расходы организации ({commonExpenses.length})
             </h2>
+            <div className="mb-4 text-xs text-gray-500">
+              Debug: commonExpenses.length = {commonExpenses.length}<br/>
+              Debug: loading = {loading.toString()}
+            </div>
 
             <div className="overflow-x-auto">
               <table className="w-full table-auto">
@@ -769,7 +945,16 @@ const ExpenseReports: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-gray-200">
                   {commonExpenses.map((expense) => (
-                    <tr key={expense.id} className="hover:bg-gray-50">
+                    <tr
+                      key={expense.id}
+                      className="hover:bg-blue-50 cursor-pointer transition-colors"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        console.log('Common expense clicked:', expense);
+                        handleExpenseClick(expense, 'common');
+                      }}
+                    >
                       <td className="px-4 py-3">
                         <span className="text-sm">
                           {new Date(expense.date).toLocaleDateString('ru-RU')}
@@ -824,7 +1009,8 @@ const ExpenseReports: React.FC = () => {
           </div>
         )}
 
-
+        {/* Expense Detail Modal */}
+        <ExpenseDetailModal />
       </div>
     </div>
   );

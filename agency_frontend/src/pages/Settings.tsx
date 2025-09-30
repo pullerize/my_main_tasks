@@ -119,9 +119,9 @@ function Settings() {
         
         // Получаем имя файла из заголовка Content-Disposition или создаем свое
         const contentDisposition = response.headers.get('Content-Disposition')
-        const filename = contentDisposition 
+        const filename = contentDisposition
           ? contentDisposition.split('filename=')[1]?.replace(/"/g, '')
-          : `database_export_${new Date().toISOString().slice(0,19).replace(/:/g, '-')}.db`
+          : `database_export_${new Date().toISOString().slice(0,19).replace(/:/g, '-')}.zip`
         
         a.download = filename
         document.body.appendChild(a)
@@ -142,8 +142,8 @@ function Settings() {
     const file = event.target.files[0]
     if (!file) return
 
-    if (!file.name.endsWith('.db')) {
-      alert('Пожалуйста, выберите файл с расширением .db')
+    if (!file.name.endsWith('.db') && !file.name.endsWith('.zip')) {
+      alert('Пожалуйста, выберите файл с расширением .db или .zip')
       return
     }
 
@@ -176,7 +176,17 @@ function Settings() {
 - Цифровых проектов: ${data.imported.digital_projects}
 - Операторов: ${data.imported.operators}
 - Статей расходов: ${data.imported.expense_items}
-- Налогов: ${data.imported.taxes}${availableTables}`)
+- Налогов: ${data.imported.taxes}
+- CRM заявок: ${data.imported.leads || 0}
+- Заметок к заявкам: ${data.imported.lead_notes || 0}
+- Вложений к заявкам: ${data.imported.lead_attachments || 0}
+- Истории заявок: ${data.imported.lead_history || 0}
+- Категорий расходов: ${data.imported.expense_categories || 0}
+- Расходов по проектам: ${data.imported.project_expenses || 0}
+- Общих расходов: ${data.imported.common_expenses || 0}
+- Расходов по цифр. проектам: ${data.imported.digital_project_expenses || 0}
+- Расходов сотрудников: ${data.imported.employee_expenses || 0}
+- Отчетов по проектам: ${data.imported.project_reports || 0}${availableTables}`)
       } else {
         alert(`Ошибка импорта: ${data.detail}`)
       }
@@ -222,15 +232,26 @@ function Settings() {
 - Пользователей: ${data.deleted.users}
 - Проектов: ${data.deleted.projects}
 - Задач: ${data.deleted.tasks}
+- Повторяющихся задач: ${data.deleted.recurring_tasks || 0}
 - Цифровых проектов: ${data.deleted.digital_projects}
 - Операторов: ${data.deleted.operators}
 - Статей расходов: ${data.deleted.expense_items}
 - Налогов: ${data.deleted.taxes}
 - Расходов: ${data.deleted.expenses}
+- Расходов по проектам: ${data.deleted.project_expenses || 0}
+- Общих расходов: ${data.deleted.common_expenses || 0}
+- Расходов клиентов: ${data.deleted.project_client_expenses || 0}
+- Расходов по цифр. проектам: ${data.deleted.digital_project_expenses || 0}
+- Расходов сотрудников: ${data.deleted.employee_expenses || 0}
 - Поступлений: ${data.deleted.receipts}
 - Съемок: ${data.deleted.shootings}
 - Постов: ${data.deleted.posts}
-- Файлов: ${data.deleted.files}`)
+- Файлов: ${data.deleted.files}
+- CRM заявок: ${data.deleted.leads || 0}
+- Заметок к заявкам: ${data.deleted.lead_notes || 0}
+- Вложений к заявкам: ${data.deleted.lead_attachments || 0}
+- Истории заявок: ${data.deleted.lead_history || 0}
+- Отчетов по проектам: ${data.deleted.project_reports || 0}`)
         
         // Перезагружаем страницу для обновления данных
         setTimeout(() => {
@@ -310,8 +331,8 @@ function Settings() {
       <div className="bg-white rounded-lg shadow p-6">
         <h3 className="text-lg font-semibold mb-4">Импорт базы данных</h3>
         <p className="text-sm text-gray-600 mb-4">
-          Загрузите файл базы данных (.db) для импорта данных о пользователях, проектах, задачах и других сущностях.
-          Существующие записи с уникальными идентификаторами не будут дублироваться.
+          Загрузите файл базы данных (.db) или архив с базой и файлами (.zip) для импорта данных о пользователях, проектах, задачах и других сущностях.
+          ZIP архивы также восстанавливают все загруженные файлы (логотипы, CRM вложения, контракты). Существующие записи с уникальными идентификаторами не будут дублироваться.
         </p>
         
         <div className="mb-4">
@@ -319,7 +340,7 @@ function Settings() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".db"
+              accept=".db,.zip"
               onChange={handleDatabaseImport}
               disabled={importing}
               className="block flex-1 text-sm text-gray-500
@@ -334,7 +355,7 @@ function Settings() {
               onClick={handleDatabaseDownload}
               className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-semibold whitespace-nowrap"
             >
-              📥 Скачать БД
+              📦 Скачать архив БД
             </button>
           </div>
         </div>

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { API_URL } from '../api'
+import CustomDatePicker from '../components/CustomDatePicker'
 
 interface Post {
   id: number
@@ -38,7 +39,7 @@ function ProjectDetail() {
   const [postsCount, setPostsCount] = useState(0)
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
-  const [month,setMonth] = useState(new Date().getMonth()+1)
+  const [month,setMonth] = useState(new Date().getMonth() + 1) // Текущий месяц (1-12)
 
   const [posts, setPosts] = useState<Post[]>([])
   const [drafts, setDrafts] = useState<Post[]>([])
@@ -49,7 +50,42 @@ function ProjectDetail() {
 
   const parseUTC = (s: string) => new Date(s.endsWith('Z') ? s : s + 'Z')
 
+  // Функции для работы с проектными месяцами - генерируем все месяцы года
+  const projectMonths = useMemo(() => {
+    // Создаем все 12 месяцев для текущего года
+    const currentYear = new Date().getFullYear()
+    const months = []
+
+    for (let monthIndex = 0; monthIndex < 12; monthIndex++) {
+      // Если есть даты проекта, используем день начала проекта, иначе 1 число
+      const dayOfMonth = startDate ? parseUTC(startDate + 'T00:00:00').getUTCDate() : 1
+
+      // Начало месяца - используем UTC методы для избежания проблем с часовыми поясами
+      const monthStart = new Date(Date.UTC(currentYear, monthIndex, dayOfMonth))
+
+      // Конец месяца - следующий месяц, тот же день, минус 1 день
+      const nextMonth = new Date(Date.UTC(currentYear, monthIndex + 1, dayOfMonth))
+      const monthEnd = new Date(nextMonth.getTime() - 24 * 60 * 60 * 1000)
+
+      months.push({
+        index: monthIndex + 1,
+        name: `${MONTHS[monthIndex]} ${currentYear}`,
+        startDate: monthStart.toISOString().slice(0, 10),
+        endDate: monthEnd.toISOString().slice(0, 10)
+      })
+    }
+
+    return months
+  }, [startDate]) // Зависит только от startDate для определения дня месяца
+
+  const getProjectMonths = () => projectMonths
+
+  const getCurrentProjectMonth = () => {
+    return projectMonths.find(m => m.index === month) || projectMonths[0]
+  }
+
   const load = async (m:number=month) => {
+    // Загружаем информацию о проекте
     const res = await fetch(`${API_URL}/projects/${id}`, { headers: { Authorization: `Bearer ${token}` } })
     if (res.ok) {
       const data = await res.json()
@@ -59,15 +95,52 @@ function ProjectDetail() {
       setStartDate(data.start_date?.slice(0, 10) || '')
       setEndDate(data.end_date?.slice(0, 10) || '')
     }
-    let year = startDate ? parseUTC(startDate + 'T00:00:00').getUTCFullYear() : new Date().getFullYear()
+
+    // Загружаем все посты проекта (без параметров month и year)
+    try {
+      const allPostsRes = await fetch(`${API_URL}/projects/${id}/posts`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+
+      if (allPostsRes.ok) {
+        const allPosts = await allPostsRes.json()
+        setPosts(allPosts)
+      } else {
+        // Fallback: если что-то пошло не так, загружаем по месяцам
+        await loadPostsByCalendarMonths(m)
+      }
+    } catch (error) {
+      console.error('Error loading all posts:', error)
+      // Fallback to calendar months loading
+      await loadPostsByCalendarMonths(m)
+    }
+
+    setLoaded(true)
+  }
+
+  const loadPostsByCalendarMonths = async (m: number) => {
+    if (!startDate) return
+
+    let year = parseUTC(startDate + 'T00:00:00').getUTCFullYear()
     const nextMonth = m === 12 ? 1 : m + 1
     const nextYear = nextMonth === 1 ? year + 1 : year
-    const first = await fetch(`${API_URL}/projects/${id}/posts?month=${m}&year=${year}`, { headers: { Authorization: `Bearer ${token}` } })
-    const second = await fetch(`${API_URL}/projects/${id}/posts?month=${nextMonth}&year=${nextYear}`, { headers: { Authorization: `Bearer ${token}` } })
+
+    const first = await fetch(`${API_URL}/projects/${id}/posts?month=${m}&year=${year}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    const second = await fetch(`${API_URL}/projects/${id}/posts?month=${nextMonth}&year=${nextYear}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+
     const list1 = first.ok ? await first.json() : []
     const list2 = second.ok ? await second.json() : []
-    setPosts([...list1, ...list2])
-    setLoaded(true)
+
+    // Объединяем списки и удаляем дубликаты по ID
+    const combinedPosts = [...list1, ...list2]
+    const uniquePosts = combinedPosts.filter((post, index, array) =>
+      array.findIndex(p => p.id === post.id) === index
+    )
+    setPosts(uniquePosts)
   }
 
   useEffect(() => { load(month) }, [id, month])
@@ -87,21 +160,7 @@ function ProjectDetail() {
     }
   }
 
-  useEffect(() => {
-    if (!loaded || !startDate) return
-    const d = new Date(startDate + 'T00:00:00Z')
-    const year = d.getUTCFullYear()
-    const day = d.getUTCDate()
-    const newStart = new Date(Date.UTC(year, month - 1, day))
-    const newEnd = new Date(Date.UTC(year, month - 1, day))
-    newEnd.setUTCMonth(newEnd.getUTCMonth() + 1)
-    newEnd.setUTCDate(newEnd.getUTCDate() - 1)
-    const s = newStart.toISOString().slice(0, 10)
-    const e = newEnd.toISOString().slice(0, 10)
-    setStartDate(s)
-    setEndDate(e)
-    updateInfo({ start_date: s, end_date: e })
-  }, [month])
+  // Проектные месяцы не изменяют общие даты проекта
 
   // month/year selectors no longer reset start and end dates automatically
 
@@ -158,20 +217,20 @@ function ProjectDetail() {
       const updated = { ...post, [field]: value }
       if (field === 'date' && value) {
         const d = parseUTC(value + 'T00:00:00')
-        const sd = startDate ? parseUTC(startDate + 'T00:00:00') : null
-        const ed = endDate ? parseUTC(endDate + 'T00:00:00') : null
-        
-        // Добавляем один день к endDate для правильного сравнения
-        // так как endDate - это последний день месяца и посты на этот день должны быть включены
-        const edNextDay = ed ? new Date(ed.getTime() + 24 * 60 * 60 * 1000) : null
-        
-        if (sd && d < sd) {
-          setMonth(m => (m === 1 ? 12 : m - 1))
-        } else if (edNextDay && d >= edNextDay) {
-          // Переключаем на следующий месяц только если дата поста ПОСЛЕ последнего дня месяца
-          setMonth(m => (m === 12 ? 1 : m + 1))
+        const projectMonths = getProjectMonths()
+
+        // Находим подходящий проектный месяц для даты
+        const targetMonth = projectMonths.find(pm => {
+          const monthStart = parseUTC(pm.startDate + 'T00:00:00')
+          const monthEnd = parseUTC(pm.endDate + 'T00:00:00')
+          const monthEndNextDay = new Date(monthEnd.getTime() + 24 * 60 * 60 * 1000)
+          return d >= monthStart && d < monthEndNextDay
+        })
+
+        // Переключаемся на соответствующий проектный месяц
+        if (targetMonth && targetMonth.index !== month) {
+          setMonth(targetMonth.index)
         }
-        // Removed automatic status update - status should only change when user explicitly changes it
       }
       
       if (post.id === 0) {
@@ -193,7 +252,11 @@ function ProjectDetail() {
           })
           if (res.ok) {
             const created = await res.json()
-            setPosts([...posts, created])
+            // Проверяем, что пост с таким ID ещё не существует
+            const postExists = posts.find(p => p.id === created.id)
+            if (!postExists) {
+              setPosts([...posts, created])
+            }
             draftsCopy.splice(idx - filteredPosts.length, 1)
             setDrafts(draftsCopy)
             await load()
@@ -273,34 +336,36 @@ function ProjectDetail() {
 
   const filteredPosts = posts.filter(p => {
     const d = parseUTC(p.date)
-    const sd = startDate ? parseUTC(startDate + 'T00:00:00') : null
-    const ed = endDate ? parseUTC(endDate + 'T00:00:00') : null
-    
-    // Добавляем один день к endDate для правильного сравнения
-    const edNextDay = ed ? new Date(ed.getTime() + 24 * 60 * 60 * 1000) : null
-    
-    if (sd && d < sd) return false
-    if (edNextDay && d >= edNextDay) return false
-    return true
+    const currentProjectMonth = getCurrentProjectMonth()
+
+    if (!currentProjectMonth) return true
+
+    const monthStart = parseUTC(currentProjectMonth.startDate + 'T00:00:00')
+    const monthEnd = parseUTC(currentProjectMonth.endDate + 'T00:00:00')
+    const monthEndNextDay = new Date(monthEnd.getTime() + 24 * 60 * 60 * 1000)
+
+    return d >= monthStart && d < monthEndNextDay
   })
 
   const recalcPostsCount = async (list?: Post[], dr?: Post[]) => {
-    const sd = startDate ? parseUTC(startDate + 'T00:00:00') : null
-    const ed = endDate ? parseUTC(endDate + 'T00:00:00') : null
-    
-    // Добавляем один день к endDate для правильного сравнения
-    const edNextDay = ed ? new Date(ed.getTime() + 24 * 60 * 60 * 1000) : null
-    
+    const currentProjectMonth = getCurrentProjectMonth()
+
+    if (!currentProjectMonth) return
+
+    const monthStart = parseUTC(currentProjectMonth.startDate + 'T00:00:00')
+    const monthEnd = parseUTC(currentProjectMonth.endDate + 'T00:00:00')
+    const monthEndNextDay = new Date(monthEnd.getTime() + 24 * 60 * 60 * 1000)
+
     const relevant = (list || posts).filter(p => {
       const d = parseUTC(p.date)
-      if (sd && d < sd) return false
-      if (edNextDay && d >= edNextDay) return false
-      return true
+      return d >= monthStart && d < monthEndNextDay
     })
+
     const totalExisting = relevant.reduce((sum, p) => sum + p.posts_per_day, 0)
     const draftSum = (dr || drafts).reduce((sum, d) => sum + d.posts_per_day, 0)
     const total = totalExisting + draftSum
     setPostsCount(total)
+
     await fetch(`${API_URL}/projects/${id}/info`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -329,98 +394,108 @@ function ProjectDetail() {
   return (
     <div>
       {/* Header with back navigation */}
-      <div className="bg-white shadow-sm border border-gray-200 rounded-xl px-6 py-4 mb-6">
-        <div className="flex items-center space-x-4">
+      <div className="bg-white shadow-sm border border-gray-200 rounded-lg px-4 py-3 mb-4">
+        <div className="flex items-center space-x-3">
           <button
             onClick={() => navigate('/smm-projects', { state: { fromProjectDetail: true } })}
-            className="flex items-center px-4 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-all duration-200 group"
+            className="flex items-center px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-all duration-200 group"
           >
-            <svg className="w-5 h-5 mr-2 group-hover:-translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 mr-1.5 group-hover:-translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
             </svg>
             Назад к проектам
           </button>
-          <div className="h-6 w-px bg-gray-300"></div>
-          <h1 className="text-2xl font-bold text-gray-800">
+          <div className="h-4 w-px bg-gray-300"></div>
+          <h1 className="text-lg font-bold text-gray-800">
             {project?.name || 'Загрузка...'}
           </h1>
         </div>
       </div>
 
-      <div className="space-y-6">
+      <div className="space-y-4">
         {/* Error Messages */}
         {saveError && (
-          <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 flex items-center space-x-2">
-            <svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="bg-red-50 border border-red-200 rounded-md px-3 py-2 flex items-center space-x-2">
+            <svg className="h-4 w-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
             </svg>
-            <span className="text-red-800">{saveError}</span>
+            <span className="text-sm text-red-800">{saveError}</span>
           </div>
         )}
 
         {/* Project Information Card */}
         {project && (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="px-6 py-4 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-gray-200">
-              <h2 className="text-lg font-semibold text-gray-800 mb-4">Информация о проекте</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-600">Название проекта</label>
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="px-4 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-gray-200">
+              <h2 className="text-base font-semibold text-gray-800 mb-3">Информация о проекте</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-gray-600">Название проекта</label>
                   <input
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     onBlur={() => updateInfo({name})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-transparent transition-all"
                     placeholder="Введите название"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-600">Количество постов</label>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-gray-600">Количество постов</label>
                   <input
                     type="number"
                     value={postsCount}
                     onChange={(e) => setPostsCount(Number(e.target.value))}
                     onBlur={() => updateInfo({posts_count: postsCount})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-transparent transition-all"
                     placeholder="0"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-600">Дата начала</label>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-gray-600">Дата начала</label>
                   <input
                     type="date"
                     value={startDate}
                     onChange={(e) => handleStartChange(e.target.value)}
                     onBlur={() => updateInfo({start_date: startDate, end_date: endDate})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-transparent transition-all"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-600">Дата завершения</label>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-gray-600">Дата завершения</label>
                   <input
                     type="date"
                     value={endDate}
                     onChange={(e) => setEndDate(e.target.value)}
                     onBlur={() => updateInfo({end_date: endDate})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-transparent transition-all"
                   />
                 </div>
               </div>
             </div>
             
             {/* Month selector */}
-            <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
-              <div className="flex items-center space-x-4">
-                <label className="text-sm font-medium text-gray-600">Просмотр по месяцам:</label>
-                <select 
-                  value={month} 
+            <div className="px-4 py-2 bg-gray-50 border-b border-gray-200">
+              <div className="flex items-center space-x-3">
+                <label className="text-xs font-medium text-gray-600">Проектные месяцы:</label>
+                <select
+                  value={month}
                   onChange={e => setMonth(Number(e.target.value))}
-                  className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
+                  className="px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
                 >
-                  {MONTHS.map((m, i) => (
-                    <option key={i + 1} value={i + 1}>{m}</option>
-                  ))}
+                  {startDate && endDate && projectMonths.length > 0 ? (
+                    projectMonths.map((projectMonth) => (
+                      <option key={projectMonth.index} value={projectMonth.index}>
+                        {projectMonth.name} ({projectMonth.startDate} — {projectMonth.endDate})
+                      </option>
+                    ))
+                  ) : startDate && endDate ? (
+                    <option value={1}>
+                      Проект ({startDate} — {endDate})
+                    </option>
+                  ) : (
+                    <option value={1}>Загрузка...</option>
+                  )}
                 </select>
               </div>
             </div>
@@ -428,15 +503,15 @@ function ProjectDetail() {
         )}
 
         {/* Posts Table */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-6 py-4 bg-gradient-to-r from-green-50 to-emerald-50 border-b border-gray-200">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          <div className="px-4 py-3 bg-gradient-to-r from-green-50 to-emerald-50 border-b border-gray-200">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-800">Планирование постов</h2>
+              <h2 className="text-base font-semibold text-gray-800">Планирование постов</h2>
               <button
                 onClick={addRow}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors duration-200 flex items-center space-x-2"
+                className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors duration-200 flex items-center space-x-1.5"
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                 </svg>
                 <span>Добавить пост</span>
@@ -448,53 +523,57 @@ function ProjectDetail() {
             <table className="min-w-full">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Дата</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Постов/день</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Тип поста</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Статус</th>
-                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Действие</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Дата</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Постов/день</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Тип поста</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Статус</th>
+                  <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-16">Действие</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {rows.map((p, idx) => {
                   const statusColor = statusColors[p.status] || '#6B7280'
+                  // Create unique key: for existing posts use their ID, for drafts use index with prefix to avoid conflicts
+                  const isFromDrafts = idx >= filteredPosts.length
+                  const uniqueKey = p.id ? `post-${p.id}` : `draft-${idx}-${isFromDrafts ? 'new' : 'filtered'}`
                   return (
-                    <tr key={p.id ? `post-${p.id}` : `new-${idx}`} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4">
-                        <input
-                          type="date"
+                    <tr key={uniqueKey} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-3 py-2">
+                        <CustomDatePicker
                           value={p.date ? p.date.slice(0, 10) : ''}
-                          onChange={e => updatePost(idx, p, 'date', e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                          style={{ borderLeftColor: statusColor, borderLeftWidth: '4px' }}
+                          onChange={date => updatePost(idx, p, 'date', date)}
+                          minDate={getCurrentProjectMonth()?.startDate}
+                          maxDate={getCurrentProjectMonth()?.endDate}
+                          className="w-full"
+                          style={{ borderLeftColor: statusColor, borderLeftWidth: '3px' }}
                         />
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-3 py-2">
                         <input
                           type="number"
                           min="1"
                           value={p.posts_per_day}
                           onChange={e => updatePost(idx, p, 'posts_per_day', Number(e.target.value))}
-                          className="w-20 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-center"
+                          className="w-16 px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-transparent transition-all text-center"
                         />
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-3 py-2">
                         <select
                           value={p.post_type}
                           onChange={e => updatePost(idx, p, 'post_type', e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
+                          className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
                         >
                           <option value="video">📹 Видео</option>
                           <option value="static">🖼️ Статика</option>
                           <option value="carousel">🎠 Карусель</option>
                         </select>
                       </td>
-                      <td className="px-6 py-4" style={{ minWidth: '220px' }}>
+                      <td className="px-3 py-2" style={{ minWidth: '180px' }}>
                         <select
                           value={p.status}
                           onChange={e => updatePost(idx, p, 'status', e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
-                          style={{ color: statusColor, minWidth: '200px' }}
+                          className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
+                          style={{ color: statusColor, minWidth: '160px' }}
                         >
                           {(() => {
                             const today = new Date().toISOString().slice(0, 10)
@@ -523,13 +602,13 @@ function ProjectDetail() {
                           })()}
                         </select>
                       </td>
-                      <td className="px-6 py-4 text-center">
+                      <td className="px-3 py-2 text-center">
                         <button
                           onClick={() => removeRow(idx, p)}
-                          className="p-2 text-red-600 hover:text-red-900 hover:bg-red-50 rounded-lg transition-all duration-200"
+                          className="p-1.5 text-red-600 hover:text-red-900 hover:bg-red-50 rounded-md transition-all duration-200"
                           title="Удалить пост"
                         >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                           </svg>
                         </button>
@@ -539,13 +618,13 @@ function ProjectDetail() {
                 })}
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-6 py-12 text-center">
+                    <td colSpan={5} className="px-3 py-8 text-center">
                       <div className="text-gray-500">
-                        <svg className="mx-auto h-12 w-12 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg className="mx-auto h-8 w-8 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                         </svg>
-                        <p className="text-lg font-medium mb-2">Нет запланированных постов</p>
-                        <p className="text-sm">Добавьте первый пост для начала планирования</p>
+                        <p className="text-sm font-medium mb-1">Нет запланированных постов</p>
+                        <p className="text-xs">Добавьте первый пост для начала планирования</p>
                       </div>
                     </td>
                   </tr>

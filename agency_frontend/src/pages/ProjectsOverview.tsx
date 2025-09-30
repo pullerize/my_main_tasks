@@ -6,6 +6,8 @@ interface Project {
   id: number
   name: string
   logo?: string
+  start_date?: string
+  end_date?: string
 }
 
 interface PostSummary {
@@ -16,6 +18,35 @@ interface PostSummary {
 }
 
 const MONTHS = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь']
+
+// Вспомогательные функции для работы с проектными месяцами
+const parseUTC = (s: string) => new Date(s.endsWith('Z') ? s : s + 'Z')
+
+const getProjectMonth = (startDate: string, monthIndex: number) => {
+  if (!startDate) return null
+
+  try {
+    const currentYear = new Date().getFullYear()
+
+    // Очищаем дату от возможных лишних символов
+    const cleanDate = startDate.includes('T') ? startDate.split('T')[0] : startDate
+    const dayOfMonth = parseUTC(cleanDate + 'T00:00:00').getUTCDate()
+
+    // Начало месяца
+    const monthStart = new Date(Date.UTC(currentYear, monthIndex - 1, dayOfMonth))
+
+    // Конец месяца - следующий месяц, тот же день, минус 1 день
+    const nextMonth = new Date(Date.UTC(currentYear, monthIndex, dayOfMonth))
+    const monthEnd = new Date(nextMonth.getTime() - 24 * 60 * 60 * 1000)
+
+    return {
+      startDate: monthStart.toISOString().slice(0, 10),
+      endDate: monthEnd.toISOString().slice(0, 10)
+    }
+  } catch (error) {
+    return null
+  }
+}
 
 function TaskStatsWidget({stats}:{stats:PostSummary}) {
   const total = stats.in_progress + stats.approved + stats.cancelled + stats.overdue
@@ -93,7 +124,7 @@ function TaskStatsWidget({stats}:{stats:PostSummary}) {
         </div>
         <div className="text-center mt-2">
           <span className="text-sm font-semibold text-gray-700">
-            Всего задач: {total}
+            Всего постов: {total}
           </span>
         </div>
       </div>
@@ -105,8 +136,49 @@ function Projects() {
   const [projects,setProjects]=useState<Project[]>([])
   const [stats,setStats]=useState<Record<number,PostSummary>>({})
   const [month,setMonth]=useState(new Date().getMonth()+1)
+  const [lastDatabaseVersion, setLastDatabaseVersion] = useState<string | null>(null)
   const token = localStorage.getItem('token')
   const navigate=useNavigate()
+
+  // Check database version and force refresh if changed
+  const checkDatabaseVersion = async () => {
+    try {
+      const response = await fetch(`${API_URL}/database/version`)
+      if (response.ok) {
+        const data = await response.json()
+        const currentVersion = data.version
+
+        if (lastDatabaseVersion && lastDatabaseVersion !== currentVersion) {
+          console.log('🔄 Database version changed, forcing cache refresh...', {
+            old: lastDatabaseVersion,
+            new: currentVersion
+          })
+          // Clear localStorage cache (except auth data)
+          const token = localStorage.getItem('token')
+          const role = localStorage.getItem('role')
+          const userId = localStorage.getItem('userId')
+
+          // Clear all other localStorage data
+          Object.keys(localStorage).forEach(key => {
+            if (!['token', 'role', 'userId'].includes(key)) {
+              localStorage.removeItem(key)
+            }
+          })
+
+          // Clear sessionStorage
+          sessionStorage.clear()
+
+          // Force page reload to ensure clean state
+          window.location.reload()
+          return
+        }
+
+        setLastDatabaseVersion(currentVersion)
+      }
+    } catch (error) {
+      console.error('Failed to check database version:', error)
+    }
+  }
 
   const load = async (m:number=month) => {
     if (!token) {
@@ -120,16 +192,56 @@ function Projects() {
       if(res.ok){
         const data = await res.json()
         const projects: Project[] = Array.isArray(data) ? data : []
-        setProjects(projects)
+
+        // Загружаем детальную информацию для каждого проекта
+        const projectsWithDetails = []
+        for(const p of projects) {
+          const detailRes = await fetch(`${API_URL}/projects/${p.id}`, {headers:{Authorization:`Bearer ${token}`}})
+          if(detailRes.ok) {
+            const detailData = await detailRes.json()
+            projectsWithDetails.push({
+              ...p,
+              start_date: detailData.start_date,
+              end_date: detailData.end_date
+            })
+          } else {
+            projectsWithDetails.push(p)
+          }
+        }
+
+        setProjects(projectsWithDetails)
         const obj:Record<number,PostSummary>={}
-        for(const p of projects){
-          const r = await fetch(`${API_URL}/projects/${p.id}/posts?month=${m}`,{headers:{Authorization:`Bearer ${token}`}})
+
+        for(const p of projectsWithDetails){
+          // Получаем все посты проекта
+          const r = await fetch(`${API_URL}/projects/${p.id}/posts`,{headers:{Authorization:`Bearer ${token}`}})
           if(r.ok){
-            const posts = await r.json()
+            const allPosts = await r.json()
             const sum:PostSummary={in_progress:0,approved:0,cancelled:0,overdue:0}
-            if(Array.isArray(posts)){
-              for(const pt of posts){
-                sum[pt.status as keyof PostSummary]++
+
+            if(Array.isArray(allPosts)){
+              if(p.start_date) {
+                // Получаем диапазон текущего проектного месяца
+                const projectMonth = getProjectMonth(p.start_date, m)
+
+                if(projectMonth){
+                  // Фильтруем посты по диапазону проектного месяца
+                  const filteredPosts = allPosts.filter(post => {
+                    if(!post.date) return false
+                    const postDate = post.date.slice(0, 10)
+                    return postDate >= projectMonth.startDate && postDate <= projectMonth.endDate
+                  })
+
+                  // Считаем статистику для отфильтрованных постов
+                  for(const pt of filteredPosts){
+                    sum[pt.status as keyof PostSummary]++
+                  }
+                }
+              } else {
+                // Если нет дат проекта, считаем все посты
+                for(const pt of allPosts){
+                  sum[pt.status as keyof PostSummary]++
+                }
               }
             }
             obj[p.id]=sum
@@ -148,7 +260,47 @@ function Projects() {
     }
   }
 
-  useEffect(()=>{load(month)},[month])
+  useEffect(()=>{
+    // Initial load with database version check
+    const initialLoad = async () => {
+      await checkDatabaseVersion()
+      load(month)
+    }
+    initialLoad()
+  },[month])
+
+  // Добавляем автоматическое обновление
+  useEffect(() => {
+    const handleFocus = async () => {
+      console.log('🔄 Page focused, checking database version and reloading projects...')
+      await checkDatabaseVersion()
+      load(month)
+    }
+
+    const handleVisibilityChange = async () => {
+      if (!document.hidden) {
+        console.log('🔄 Page became visible, checking database version and reloading projects...')
+        await checkDatabaseVersion()
+        load(month)
+      }
+    }
+
+    // Автообновление каждые 10 секунд с проверкой версии БД
+    const interval = setInterval(async () => {
+      console.log('⏰ Auto-refreshing: checking database version and projects data...')
+      await checkDatabaseVersion()
+      load(month)
+    }, 10000)
+
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [month])
 
   return (
     <div>
@@ -160,14 +312,30 @@ function Projects() {
         </div>
         
         {/* Minimalistic Month Filter */}
-        <div className="mt-4 sm:mt-0">
-          <select 
-            className="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all" 
-            value={month} 
+        <div className="mt-4 sm:mt-0 flex items-center space-x-3">
+          <select
+            className="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
+            value={month}
             onChange={e=>setMonth(Number(e.target.value))}
           >
             {MONTHS.map((m,i)=>(<option key={i+1} value={i+1}>{m}</option>))}
           </select>
+
+          {/* Кнопка обновления */}
+          <button
+            onClick={async () => {
+              console.log('🔄 Manual reload requested - checking database version')
+              await checkDatabaseVersion()
+              load(month)
+            }}
+            className="flex items-center space-x-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm transition-colors"
+            title="Обновить данные"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span>Обновить</span>
+          </button>
         </div>
       </div>
       {/* Projects Grid */}

@@ -47,9 +47,11 @@ export const endpoints = {
     receipts: `${API_URL}/project-receipts/`,
   },
   resources: {
-    files: `${API_URL}/resources/files`,
-    upload: `${API_URL}/resources/upload`,
-    download: (id: number) => `${API_URL}/resources/files/${id}/download`,
+    files: `${API_URL}/resource-files/`,
+    upload: `${API_URL}/resource-files/`,
+    update: (id: number) => `${API_URL}/resource-files/${id}`,
+    delete: (id: number) => `${API_URL}/resource-files/${id}`,
+    download: (id: number) => `${API_URL}/resource-files/${id}/download`,
   },
   expenses: {
     categories: `${API_URL}/expense-categories/`,

@@ -16,3 +16,11 @@ dist/
 .env
 .env.local
 .env.production
+# Добавим игнорирование для Python кеша и тестовых файлов
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+test_*.py
+debug_*.py

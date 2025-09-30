@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../api'
-import { formatDateShortUTC5, getCurrentTimeUTC5, formatDateUTC5, formatDeadline } from '../utils/dateUtils'
+import { formatDateShortUTC5, getCurrentTimeUTC5, formatDateUTC5, formatDeadline, formatDateAsIs } from '../utils/dateUtils'
 import { usePersistedState } from '../utils/filterStorage'
+import { isAdmin } from '../utils/roleUtils'
 
 interface Task {
   id: number
@@ -238,6 +239,9 @@ function Tasks() {
   const [users, setUsers] = useState<User[]>([])
   const [projects, setProjects] = useState<{id: number; name: string}[]>([])
 
+  // Добавляем состояние для активной вкладки
+  const [activeTab, setActiveTab] = useState<'regular' | 'recurring'>('regular')
+
   const [filterRole, setFilterRole] = usePersistedState('filter_tasks_role', '')
   // Временная замена usePersistedState для отладки
   const [filterUser, setFilterUser] = useState(() => {
@@ -259,11 +263,20 @@ function Tasks() {
   const [hasInitialized, setHasInitialized] = useState(false)
   const [filterDate, setFilterDate] = usePersistedState('filter_tasks_date', 'all')
   const [customDate, setCustomDate] = usePersistedState('filter_tasks_custom_date', '')
-  const [filterStatus, setFilterStatus] = usePersistedState('filter_tasks_status', 'active')
+  const [filterStatus, setFilterStatus] = usePersistedState('filter_tasks_status', 'in_progress')
   const [filterProject, setFilterProject] = usePersistedState('filter_tasks_project', '')
 
   const role = localStorage.getItem('role') || ''
   const userId = Number(localStorage.getItem('userId'))
+
+  // Helper function to get effective role (executor's role or current user's role)
+  const getEffectiveRole = (executorId: number | string | null): string => {
+    if (executorId && Array.isArray(users)) {
+      const executor = users.find((u) => u.id === Number(executorId))
+      return executor?.role || role
+    }
+    return role
+  }
 
   // Сохраняем filterUser в localStorage при изменении
   useEffect(() => {
@@ -287,18 +300,16 @@ function Tasks() {
   }, [userId, hasInitialized])
 
   const allowedUsers = Array.isArray(users) ? users.filter((u) => {
-    if (role === 'admin') return true
+    if (isAdmin(role)) return true
     if (role === 'designer') return u.role === 'designer'
-    if (role === 'digital') return u.role === 'digital'
     if (role === 'smm_manager')
-      return u.role === 'designer' || u.role === 'smm_manager' || u.role === 'digital'
+      return u.role === 'designer' || u.role === 'smm_manager'
     return false
   }) : []
 
   const allowedRoles = () => {
-    if (role === 'admin') return ['designer', 'smm_manager', 'digital', 'admin']
-    if (role === 'smm_manager') return ['designer', 'smm_manager', 'digital']
-    if (role === 'digital') return ['digital']
+    if (isAdmin(role)) return ['designer', 'smm_manager', 'admin']
+    if (role === 'smm_manager') return ['designer', 'smm_manager']
     if (role === 'designer') return ['designer']
     return []
   }
@@ -367,21 +378,25 @@ function Tasks() {
 
   const filteredTasks = Array.isArray(tasks) ? tasks.filter((t) => {
     if (!Array.isArray(users)) return true
-    
-    
+
+    // Фильтрация по вкладкам
+    // Для обычных задач показываем только те, что никогда не были повторяющимися
+    if (activeTab === 'regular' && t.is_recurring) return false
+    // Для повторяющихся задач показываем все, что когда-либо были повторяющимися (включая остановленные)
+    // Пока что используем существующую логику, но можно расширить если в базе есть поле was_recurring
+    if (activeTab === 'recurring' && !t.is_recurring) return false
+
     const execRole = users.find((u) => u.id === t.executor_id)?.role
     if (role === 'designer' && execRole !== 'designer') return false
-    if (role === 'digital' && execRole !== 'digital') return false
     if (
       role === 'smm_manager' &&
       execRole !== 'designer' &&
-      execRole !== 'smm_manager' &&
-      execRole !== 'digital'
+      execRole !== 'smm_manager'
     )
       return false
     if (filterStatus !== 'all') {
-      if (filterStatus === 'new' && t.status !== 'new') return false
-      if (filterStatus === 'in_progress' && t.status !== 'in_progress') return false
+      if (filterStatus === 'in_progress' && t.status !== 'in_progress' && t.status !== 'new') return false
+      if (filterStatus === 'overdue' && t.status !== 'overdue') return false
       if (filterStatus === 'done' && t.status !== 'done') return false
     }
     if (filterRole) {
@@ -424,29 +439,12 @@ function Tasks() {
     })
 
   const validateDeadline = () => {
-    const execRole = executorId && Array.isArray(users) ? users.find(u => u.id === Number(executorId))?.role : role
-    if (execRole === 'designer') {
-      if (!deadlineTime) return true
-      const now = new Date()
-      if (now.getHours() >= 17) {
-        const today = new Date()
-        const [h, m] = deadlineTime.split(':').map(Number)
-        const dl = new Date(today)
-        dl.setHours(h, m, 0, 0)
-        const next = new Date(now)
-        next.setDate(now.getDate() + 1)
-        next.setHours(9,0,0,0)
-        if (dl < next) return false
-      }
-    }
+    // Валидация времени удалена - пользователь может ставить задачи в любое время
     return true
   }
 
   const createTask = async () => {
-    if (!validateDeadline()) {
-      alert('Нельзя ставить задачу дизайнеру с таким дедлайном после 17:00')
-      return
-    }
+    // Валидация времени убрана
     let deadlineStr: string | undefined
     if (deadlineTime.length === 5) {
       if (isRecurring) {
@@ -517,10 +515,7 @@ function Tasks() {
 
   const saveTask = async () => {
     if (!selectedTask) return
-    if (!validateDeadline()) {
-      alert('Нельзя ставить задачу дизайнеру с таким дедлайном после 17:00')
-      return
-    }
+    // Валидация времени убрана
     let deadlineStr: string | undefined
     if (deadlineTime.length === 5) {
       if (isRecurring) {
@@ -594,6 +589,94 @@ function Tasks() {
     setTasks(Array.isArray(tasks) ? tasks.filter((t) => t.id !== id) : [])
   }
 
+  // Функция для остановки повторений задачи
+  const stopRecurring = async (id: number) => {
+    const token = localStorage.getItem('token')
+    try {
+      // Используем более простой подход - отправляем PATCH запрос только с нужными полями
+      const response = await fetch(`${API_URL}/tasks/${id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          is_recurring: false
+        }),
+      })
+
+      if (response.ok) {
+        // Обновляем список задач
+        const res = await fetch(`${API_URL}/tasks/`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const data = await res.json()
+        setTasks(Array.isArray(data) ? data : [])
+
+        // Если модальное окно открыто для этой задачи, обновляем состояние
+        if (selectedTask && selectedTask.id === id) {
+          setSelectedTask(prev => prev ? { ...prev, is_recurring: false } : null)
+          setIsRecurring(false)
+        }
+
+        return true
+      } else {
+        // Если PATCH не поддерживается, пробуем стандартное обновление
+        console.log('PATCH failed, trying PUT with full data')
+
+        // Находим задачу в текущем состоянии
+        const currentTask = tasks.find(t => t.id === id)
+        if (!currentTask) {
+          console.error('Task not found in current state')
+          return false
+        }
+
+        // Создаем полную копию задачи с отключенными повторениями
+        const updateData = {
+          ...currentTask,
+          is_recurring: false,
+          recurrence_type: undefined,
+          recurrence_time: undefined,
+          recurrence_days: undefined,
+          next_run_at: undefined
+        }
+
+        const putResponse = await fetch(`${API_URL}/tasks/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(updateData),
+        })
+
+        if (putResponse.ok) {
+          // Обновляем список задач
+          const res = await fetch(`${API_URL}/tasks/`, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+          const data = await res.json()
+          setTasks(Array.isArray(data) ? data : [])
+
+          // Если модальное окно открыто для этой задачи, обновляем состояние
+          if (selectedTask && selectedTask.id === id) {
+            setSelectedTask(prev => prev ? { ...prev, is_recurring: false } : null)
+            setIsRecurring(false)
+          }
+
+          return true
+        } else {
+          const errorData = await putResponse.json()
+          console.error('PUT API Error:', putResponse.status, errorData)
+        }
+      }
+    } catch (error) {
+      console.error('Error stopping recurring task:', error)
+    }
+    return false
+  }
+
+
   const togglePriority = async (id: number, currentPriority: boolean) => {
     try {
       console.log('Toggling priority for task', id, 'from', currentPriority, 'to', !currentPriority)
@@ -661,7 +744,7 @@ function Tasks() {
   return (
     <div className="w-full overflow-hidden bg-gray-50 min-h-screen">
       <div className="bg-white shadow-sm border-b p-6">
-        <div className="flex justify-between items-center mb-4">
+        <div className="flex justify-between items-center mb-6">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Управление задачами</h1>
             <p className="text-gray-600 mt-1">Отслеживайте прогресс и управляйте задачами команды</p>
@@ -685,14 +768,54 @@ function Tasks() {
                 setExecutorRole('')
               }
               setHighPriority(false)
-                        setDeadlineTime('')
-    setDeadlineDate('')
+              setDeadlineTime('')
+              setDeadlineDate('')
+              // Автоматически устанавливаем тип задачи в зависимости от активной вкладки
+              setIsRecurring(activeTab === 'recurring')
               setShowModal(true)
             }}
           >
             <span>+</span>
-            <span>Создать задачу</span>
+            <span>{activeTab === 'recurring' ? 'Создать повторяющуюся задачу' : 'Создать задачу'}</span>
           </button>
+        </div>
+
+        {/* Вкладки */}
+        <div className="border-b border-gray-200 mb-6">
+          <nav className="-mb-px flex space-x-8">
+            <button
+              className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors duration-200 ${
+                activeTab === 'regular'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+              onClick={() => setActiveTab('regular')}
+            >
+              <div className="flex items-center space-x-2">
+                <span className="text-lg">📋</span>
+                <span>Обычные задачи</span>
+                <span className="inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white bg-blue-600 rounded-full">
+                  {tasks.filter(t => !t.is_recurring).length}
+                </span>
+              </div>
+            </button>
+            <button
+              className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors duration-200 ${
+                activeTab === 'recurring'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+              onClick={() => setActiveTab('recurring')}
+            >
+              <div className="flex items-center space-x-2">
+                <span className="text-lg">🔄</span>
+                <span>Повторяющиеся задачи</span>
+                <span className="inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white bg-green-600 rounded-full">
+                  {tasks.filter(t => t.is_recurring).length}
+                </span>
+              </div>
+            </button>
+          </nav>
         </div>
         
         {/* Легенда статусов */}
@@ -741,7 +864,7 @@ function Tasks() {
                 <option value="designer">{ROLE_NAMES.designer}</option>
                 <option value="smm_manager">{ROLE_NAMES.smm_manager}</option>
                 <option value="digital">{ROLE_NAMES.digital}</option>
-                {role === 'admin' && (
+                {isAdmin(role) && (
                   <option value="admin">{ROLE_NAMES.admin}</option>
                 )}
               </select>
@@ -758,11 +881,11 @@ function Tasks() {
               <option value="">Все сотрудники</option>
               {Array.isArray(users) && users
                 .filter((u) =>
-                  role === 'admin'
+                  isAdmin(role)
                     ? filterRole
                       ? u.role === filterRole
                       : true
-                    : u.role !== 'admin' && (filterRole ? u.role === filterRole : true)
+                    : !isAdmin(u.role) && (filterRole ? u.role === filterRole : true)
                 )
                 .map((u) => (
                   <option key={u.id} value={u.id}>
@@ -794,8 +917,8 @@ function Tasks() {
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
             >
-              <option value="new">Новые</option>
               <option value="in_progress">В работе</option>
+              <option value="overdue">Просроченные</option>
               <option value="done">Завершенные</option>
               <option value="all">Все</option>
             </select>
@@ -831,7 +954,7 @@ function Tasks() {
                     Создана
                   </th>
                   <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider min-w-[120px]">
-                    Дедлайн
+                    {activeTab === 'recurring' ? 'Расписание' : 'Дедлайн'}
                   </th>
                   <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider min-w-[160px]">
                     Действия
@@ -852,9 +975,8 @@ function Tasks() {
                           <div className={`w-3 h-3 rounded-full ${
                             t.status === 'new' ? 'bg-blue-500' :
                             t.status === 'in_progress' ? 'bg-yellow-500' :
-                            t.status === 'done' ? 'bg-green-500' : 
-                            // Проверка на просроченность
-                            (t.deadline && new Date(t.deadline) < new Date()) ? 'bg-red-500' : 
+                            t.status === 'overdue' ? 'bg-red-500' :
+                            t.status === 'done' ? 'bg-green-500' :
                             'bg-gray-400'
                           }`}></div>
                         </div>
@@ -900,7 +1022,7 @@ function Tasks() {
                             }
                           }}
                         >
-                          <div className="truncate max-w-[180px] flex items-center gap-2">
+                          <div className="flex items-center gap-2">
                             <button
                               className={`inline-flex items-center justify-center w-5 h-5 hover:scale-110 transition-all duration-200 ${
                                 t.high_priority 
@@ -934,35 +1056,64 @@ function Tasks() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="text-sm text-gray-900">
-                        <div className="truncate max-w-[100px]">{t.project || '-'}</div>
+                        <div className="truncate">{t.project || '-'}</div>
                       </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center space-x-2">
                         <span className="text-lg">{TYPE_ICONS[t.task_type || ''] || '📋'}</span>
-                        <span className="text-sm text-gray-900 truncate max-w-[100px]">{t.task_type || '-'}</span>
+                        <span className="text-sm text-gray-900 truncate">{t.task_type || '-'}</span>
                       </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="text-sm text-gray-900">
-                        <div className="truncate max-w-[100px]">{getUserName(t.author_id) || '-'}</div>
+                        <div className="truncate">{getUserName(t.author_id) || '-'}</div>
                       </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="text-sm text-gray-900">
-                        <div className="truncate max-w-[100px]">{getExecutorName(t.executor_id) || '-'}</div>
+                        <div className="truncate">{getExecutorName(t.executor_id) || '-'}</div>
                       </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="text-sm text-gray-900">
-                        <div className="truncate max-w-[120px]">{formatDate(t.created_at)}</div>
+                        <div className="truncate">{formatDate(t.created_at)}</div>
                       </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="text-sm">
-                        {t.status === 'new' ? (
+                        {activeTab === 'recurring' && t.is_recurring ? (
+                          <div className="space-y-1">
+                            {t.recurrence_time && (
+                              <div className="text-xs text-gray-600">
+                                ⏰ {t.recurrence_time}
+                              </div>
+                            )}
+                            {t.next_run_at && (
+                              <div className="text-xs text-gray-600">
+                                📅 След: {formatDate(t.next_run_at)}
+                              </div>
+                            )}
+                            <div className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
+                              ✅ Активна
+                            </div>
+                          </div>
+                        ) : activeTab === 'recurring' && !t.is_recurring ? (
+                          <div className="space-y-1">
+                            <div className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                              ⏸️ Остановлена
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              Повторения отключены
+                            </div>
+                          </div>
+                        ) : t.status === 'new' ? (
                           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
                             🆕 Новая
+                          </span>
+                        ) : t.status === 'overdue' ? (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                            ⏰ Просрочена
                           </span>
                         ) : t.status === 'done' ? (
                           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
@@ -977,8 +1128,155 @@ function Tasks() {
                       <div className="flex gap-2 justify-start flex-wrap">
                         {(() => {
                           const isOverdue = t.deadline && t.status !== 'done' && new Date(t.deadline) < new Date()
-                          const canManage = t.executor_id === userId || t.author_id === userId || role === 'admin' || isOverdue
-                          
+                          const canManage = t.executor_id === userId || t.author_id === userId || isAdmin(role) || isOverdue
+
+                          // Для повторяющихся задач - специальные действия с обычным функционалом
+                          if (activeTab === 'recurring') {
+                            // Если задача больше не повторяющаяся (остановлена), показываем обычные действия
+                            if (!t.is_recurring) {
+                              // Обычные действия для остановленных повторяющихся задач
+                              if (t.status === 'new') {
+                                return (
+                                  <>
+                                    {canManage && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                                        onClick={() => deleteTask(t.id)}
+                                      >
+                                        Удалить
+                                      </button>
+                                    )}
+                                    {t.executor_id === userId && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-blue-300 text-xs font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                                        onClick={() => acceptTask(t.id)}
+                                      >
+                                        Принять в работу
+                                      </button>
+                                    )}
+                                  </>
+                                )
+                              } else if (t.status === 'in_progress') {
+                                return (
+                                  <>
+                                    {canManage && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                                        onClick={() => deleteTask(t.id)}
+                                      >
+                                        Удалить
+                                      </button>
+                                    )}
+                                    {canManage && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
+                                        onClick={() => toggleStatus(t.id, 'done')}
+                                      >
+                                        Завершить
+                                      </button>
+                                    )}
+                                  </>
+                                )
+                              } else {
+                                return (
+                                  <>
+                                    {canManage && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                                        onClick={() => deleteTask(t.id)}
+                                      >
+                                        Удалить
+                                      </button>
+                                    )}
+                                    {(t.executor_id === userId || t.author_id === userId || isAdmin(role)) && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-yellow-300 text-xs font-medium rounded-md text-yellow-700 bg-yellow-50 hover:bg-yellow-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500 transition-colors"
+                                        onClick={() => toggleStatus(t.id, 'in_progress')}
+                                      >
+                                        Возобновить
+                                      </button>
+                                    )}
+                                  </>
+                                )
+                              }
+                            }
+                            // Для активных повторяющихся задач
+                            else if (t.is_recurring) {
+                              // Для новых повторяющихся задач
+                              if (t.status === 'new') {
+                                return (
+                                  <>
+                                    {canManage && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                                        onClick={() => deleteTask(t.id)}
+                                        title="Полностью удалить повторяющуюся задачу"
+                                      >
+                                        🗑️ Удалить
+                                      </button>
+                                    )}
+                                    {t.executor_id === userId && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-blue-300 text-xs font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                                        onClick={() => acceptTask(t.id)}
+                                      >
+                                        Принять в работу
+                                      </button>
+                                    )}
+                                  </>
+                                )
+                              }
+                              // Для активных повторяющихся задач (в работе)
+                              else if (t.status === 'in_progress') {
+                                return (
+                                  <>
+                                    {canManage && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                                        onClick={() => deleteTask(t.id)}
+                                        title="Полностью удалить повторяющуюся задачу"
+                                      >
+                                        🗑️ Удалить
+                                      </button>
+                                    )}
+                                    {canManage && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
+                                        onClick={() => toggleStatus(t.id, 'done')}
+                                      >
+                                        Завершить
+                                      </button>
+                                    )}
+                                  </>
+                                )
+                              }
+                              // Для завершенных повторяющихся задач
+                              else {
+                                return (
+                                  <>
+                                    {canManage && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                                        onClick={() => deleteTask(t.id)}
+                                        title="Полностью удалить повторяющуюся задачу"
+                                      >
+                                        🗑️ Удалить
+                                      </button>
+                                    )}
+                                    {(t.executor_id === userId || t.author_id === userId || isAdmin(role)) && (
+                                      <button
+                                        className="inline-flex items-center px-3 py-1.5 border border-yellow-300 text-xs font-medium rounded-md text-yellow-700 bg-yellow-50 hover:bg-yellow-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500 transition-colors"
+                                        onClick={() => toggleStatus(t.id, 'in_progress')}
+                                      >
+                                        Возобновить
+                                      </button>
+                                    )}
+                                  </>
+                                )
+                              }
+                            }
+                          }
+
                           // Для новых задач
                           if (t.status === 'new') {
                             return (
@@ -1033,7 +1331,7 @@ function Tasks() {
                           // Для завершенных задач
                           else {
                             return (
-                              (t.executor_id === userId || t.author_id === userId || role === 'admin') && (
+                              (t.executor_id === userId || t.author_id === userId || isAdmin(role)) && (
                                 <button
                                   className="inline-flex items-center px-3 py-1.5 border border-yellow-300 text-xs font-medium rounded-md text-yellow-700 bg-yellow-50 hover:bg-yellow-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500 transition-colors"
                                   onClick={() => toggleStatus(t.id, 'in_progress')}
@@ -1053,9 +1351,27 @@ function Tasks() {
           </div>
           {sortedTasks.length === 0 && (
             <div className="text-center py-12">
-              <div className="text-gray-400 text-6xl mb-4">📋</div>
-              <h3 className="text-lg font-medium text-gray-900 mb-2">Нет задач</h3>
-              <p className="text-gray-500">Пока что здесь нет ни одной задачи. Создайте первую задачу!</p>
+              <div className="text-gray-400 text-6xl mb-4">
+                {activeTab === 'recurring' ? '🔄' : '📋'}
+              </div>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                {activeTab === 'recurring' ? 'Нет повторяющихся задач' : 'Нет задач'}
+              </h3>
+              <p className="text-gray-500">
+                {activeTab === 'recurring'
+                  ? 'Здесь пока нет ни одной повторяющейся задачи. Создайте автоматически повторяющуюся задачу!'
+                  : 'Пока что здесь нет ни одной задачи. Создайте первую задачу!'
+                }
+              </p>
+              {activeTab === 'recurring' && (
+                <div className="mt-6 p-4 bg-blue-50 rounded-lg max-w-lg mx-auto">
+                  <h4 className="font-medium text-blue-900 mb-2">Что такое повторяющиеся задачи?</h4>
+                  <p className="text-sm text-blue-700">
+                    Повторяющиеся задачи автоматически создаются по расписанию (ежедневно, еженедельно или ежемесячно).
+                    Это удобно для регулярных задач как публикации в соцсетях, отчеты или встречи.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1147,11 +1463,11 @@ function Tasks() {
                   >
                     <option value="">Тип задачи не выбран</option>
                     {(
-                      (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'designer'
+                      getEffectiveRole(executorId) === 'designer'
                         ? DESIGNER_TYPES
-                        : (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'digital'
+                        : getEffectiveRole(executorId) === 'digital'
                         ? DIGITAL_TYPES
-                        : (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'admin'
+                        : isAdmin(getEffectiveRole(executorId))
                         ? ADMIN_TYPES
                         : MANAGER_TYPES
                     ).map((t) => (
@@ -1163,7 +1479,7 @@ function Tasks() {
                 )}
                 
                 {/* Выбор формата (только для дизайнеров) */}
-                {executorId && (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'designer' && (
+                {executorId && getEffectiveRole(executorId) === 'designer' && (
                   <select
                     className="border p-2 w-full mb-2"
                     value={taskFormat}
@@ -1288,11 +1604,11 @@ function Tasks() {
                       >
                         <option value="">Тип задачи не выбран</option>
                         {(
-                          (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'designer'
+                          getEffectiveRole(executorId) === 'designer'
                             ? DESIGNER_TYPES
-                            : (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'digital'
+                            : getEffectiveRole(executorId) === 'digital'
                             ? DIGITAL_TYPES
-                            : (Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'admin'
+                            : isAdmin(getEffectiveRole(executorId))
                             ? ADMIN_TYPES
                             : MANAGER_TYPES
                         ).map((t) => (
@@ -1301,7 +1617,7 @@ function Tasks() {
                           </option>
                         ))}
                       </select>
-                      {(Array.isArray(users) && users.find((u) => u.id === Number(executorId))?.role || role) === 'designer' && (
+                      {getEffectiveRole(executorId) === 'designer' && (
                         <select
                           className="border p-2 w-full mb-2"
                           value={taskFormat}
@@ -1351,15 +1667,15 @@ function Tasks() {
                       </span>
                     )}
                   </div>
-                  <div>Время постановки задачи: {formatDateUTC5(selectedTask?.created_at || '')}</div>
+                  <div>Время постановки задачи: {formatDateAsIs(selectedTask?.created_at || '')}</div>
                   {selectedTask?.accepted_at && (
-                    <div>Время принятия в работу: {formatDeadline(selectedTask.accepted_at)}</div>
+                    <div>Время принятия в работу: {formatDateAsIs(selectedTask.accepted_at)}</div>
                   )}
                   {selectedTask?.deadline && (
-                    <div>Дедлайн: {formatDeadline(selectedTask.deadline)}</div>
+                    <div>Дедлайн: {formatDateAsIs(selectedTask.deadline)}</div>
                   )}
                   {selectedTask?.finished_at && (
-                    <div>Время завершения задачи: {formatDeadline(selectedTask.finished_at)}</div>
+                    <div>Время завершения задачи: {formatDateAsIs(selectedTask.finished_at)}</div>
                   )}
                   {selectedTask?.resume_count !== undefined && selectedTask.resume_count > 0 && (
                     <div className="flex items-center gap-2">
@@ -1550,36 +1866,57 @@ function Tasks() {
             {/* Информация о повторяющейся задаче для просмотра */}
             {!isEditing && selectedTask?.is_recurring && (
               <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <div className="flex items-center gap-2 text-blue-800">
-                  <span className="text-lg">🔄</span>
-                  <div>
-                    <div className="font-medium">Повторяющаяся задача</div>
-                    <div className="text-sm">
-                      Тип повторения: {getRecurrenceTypeLabel(selectedTask.recurrence_type)}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2 text-blue-800 flex-1">
+                    <span className="text-lg">🔄</span>
+                    <div>
+                      <div className="font-medium">Повторяющаяся задача</div>
+                      <div className="text-sm">
+                        Тип повторения: {getRecurrenceTypeLabel(selectedTask.recurrence_type)}
+                      </div>
+                      {selectedTask.recurrence_time && (
+                        <div className="text-sm">
+                          Время создания: {selectedTask.recurrence_time}
+                        </div>
+                      )}
+                      {selectedTask.recurrence_days && (
+                        <div className="text-sm">
+                          {selectedTask.recurrence_type === 'monthly' ? 'День месяца:' : 'Дни:'} {
+                            selectedTask.recurrence_type === 'monthly'
+                              ? selectedTask.recurrence_days
+                              : selectedTask.recurrence_days.split(',').map(d => {
+                                  const dayNames = { '1': 'Пн', '2': 'Вт', '3': 'Ср', '4': 'Чт', '5': 'Пт', '6': 'Сб', '7': 'Вс' }
+                                  return dayNames[d.trim()] || d.trim()
+                                }).join(', ')
+                          }
+                        </div>
+                      )}
+                      {selectedTask.next_run_at && (
+                        <div className="text-sm">
+                          Следующая генерация: {formatDeadline(selectedTask.next_run_at)}
+                        </div>
+                      )}
                     </div>
-                    {selectedTask.recurrence_time && (
-                      <div className="text-sm">
-                        Время создания: {selectedTask.recurrence_time}
-                      </div>
-                    )}
-                    {selectedTask.recurrence_days && (
-                      <div className="text-sm">
-                        {selectedTask.recurrence_type === 'monthly' ? 'День месяца:' : 'Дни:'} {
-                          selectedTask.recurrence_type === 'monthly' 
-                            ? selectedTask.recurrence_days
-                            : selectedTask.recurrence_days.split(',').map(d => {
-                                const dayNames = { '1': 'Пн', '2': 'Вт', '3': 'Ср', '4': 'Чт', '5': 'Пт', '6': 'Сб', '7': 'Вс' }
-                                return dayNames[d.trim()] || d.trim()
-                              }).join(', ')
-                        }
-                      </div>
-                    )}
-                    {selectedTask.next_run_at && (
-                      <div className="text-sm">
-                        Следующая генерация: {formatDeadline(selectedTask.next_run_at)}
-                      </div>
-                    )}
                   </div>
+                  {/* Кнопка остановки повторений */}
+                  {(selectedTask.author_id === userId || isAdmin(role)) && (
+                    <button
+                      className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md text-red-700 bg-red-50 border border-red-200 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                      onClick={async () => {
+                        if (selectedTask && window.confirm('Вы уверены, что хотите остановить автоматическое создание этой задачи? Задача станет обычной и больше не будет повторяться.')) {
+                          const success = await stopRecurring(selectedTask.id)
+                          if (success) {
+                            alert('Повторения задачи остановлены. Задача теперь обычная.')
+                          } else {
+                            alert('Ошибка при остановке повторений. Попробуйте еще раз.')
+                          }
+                        }
+                      }}
+                      title="Остановить автоматическое создание задачи"
+                    >
+                      ⏸️ Остановить повторения
+                    </button>
+                  )}
                 </div>
               </div>
             )}

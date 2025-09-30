@@ -9,14 +9,14 @@ try:
     parent_env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
     if os.path.exists(parent_env_path):
         load_dotenv(parent_env_path)
-        print(f"✅ Loaded shared config from: {parent_env_path}")
+        print(f"[OK] Loaded shared config from: {parent_env_path}")
     else:
         # Fallback to local .env file
         load_dotenv()
-        print("✅ Loaded local config")
+        print("[OK] Loaded local config")
 except ImportError:
     # dotenv не установлен, используем обычные переменные окружения
-    print("⚠️  python-dotenv not installed, using environment variables")
+    print("[WARN] python-dotenv not installed, using environment variables")
 
 def get_database_url():
     """Динамически формируем DATABASE_URL на основе DB_ENGINE"""
@@ -42,8 +42,11 @@ SQLALCHEMY_DATABASE_URL = get_database_url()
 # Настройки подключения в зависимости от типа БД
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
     engine = create_engine(
-        SQLALCHEMY_DATABASE_URL, 
-        connect_args={"check_same_thread": False}
+        SQLALCHEMY_DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        # Отключаем кеширование схемы
+        pool_pre_ping=True,
+        echo=False
     )
 else:
     engine = create_engine(

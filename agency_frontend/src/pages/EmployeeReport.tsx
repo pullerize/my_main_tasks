@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../api'
-import { formatDateTimeUTC5, formatDeadlineUTC5 } from '../utils/dateUtils'
+import { formatDateTimeUTC5, formatDeadlineUTC5, formatDateAsIs } from '../utils/dateUtils'
 
 interface User {
   id: number
@@ -61,7 +61,7 @@ function lastDay(dt: Date) {
 
 function formatDateTime(d?: string | null) {
   if (!d) return ''
-  return formatDateTimeUTC5(d)
+  return formatDateAsIs(d)
 }
 
 function timeLeft(d: string) {
@@ -81,7 +81,7 @@ function timeLeft(d: string) {
 
 function renderDeadline(t: Task) {
   if (!t.deadline) return ''
-  const formatted = formatDeadlineUTC5(t.deadline) // Используем formatDeadlineUTC5 для дедлайнов
+  const formatted = formatDateAsIs(t.deadline)
   if (t.status !== 'done') {
     return `${formatted} (${timeLeft(t.deadline)})`
   }
@@ -771,7 +771,7 @@ function EmployeeReport() {
                     {modalTask.accepted_at && (
                       <div className="flex items-start">
                         <span className="text-gray-600 font-medium min-w-[120px]">Принято:</span>
-                        <span className="text-gray-900">{formatDeadlineUTC5(modalTask.accepted_at)}</span>
+                        <span className="text-gray-900">{formatDateAsIs(modalTask.accepted_at)}</span>
                       </div>
                     )}
                     {modalTask.deadline && (

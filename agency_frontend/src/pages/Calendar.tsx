@@ -136,6 +136,7 @@ function Calendar() {
   const [finishOperators, setFinishOperators] = useState<string[]>([])
 
   const [colorInfo, setColorInfo] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
 
   const openNew = (dt: Date) => {
     setCurrent(null)
@@ -195,10 +196,14 @@ function Calendar() {
     setModalDate(null); setIsEditing(false); load()
   }
 
+  const confirmDelete = () => {
+    setDeleteConfirm(true)
+  }
+
   const remove = async () => {
     if(!current) return
     await fetch(`${API_URL}/shootings/${current.id}`, {method:'DELETE', headers:{Authorization:`Bearer ${token}`}})
-    setModalDate(null); setIsEditing(false); load()
+    setDeleteConfirm(false); setModalDate(null); setIsEditing(false); load()
   }
 
   const finish = async () => {
@@ -342,14 +347,14 @@ function Calendar() {
                     onChange={e=> setManagerIds(managerIds.map((x,i)=> i===idx? e.target.value: x))}
                   >
                     <option value="">Выберите менеджера</option>
-                    {Array.isArray(users) && users.filter(u=>(u.role==='smm_manager' || u.role==='head_smm') && u.role!=='inactive' && (!Array.isArray(managerIds) || !managerIds.includes(String(u.id)) || String(u.id)===m)).map(u=>(
+                    {Array.isArray(users) && users.filter(u=>(u.role==='smm_manager') && u.role!=='inactive' && (!Array.isArray(managerIds) || !managerIds.includes(String(u.id)) || String(u.id)===m)).map(u=>(
                       <option key={u.id} value={u.id}>{u.name}</option>
                     ))}
                   </select>
                 ))}
                 <button className="text-blue-500" onClick={addManagerField}>+ менеджер</button>
                 <div className="flex justify-end space-x-2 pt-2">
-                  {current && <button onClick={remove} className="px-3 py-1 border rounded text-red-600">Удалить</button>}
+                  {current && <button onClick={confirmDelete} className="px-3 py-1 border rounded text-red-600">Удалить</button>}
                   <button onClick={()=>{setModalDate(null);setIsEditing(false)}} className="px-3 py-1 border rounded">Отмена</button>
                   <button onClick={save} className="px-3 py-1 bg-blue-500 text-white rounded">Сохранить</button>
                 </div>
@@ -373,7 +378,7 @@ function Calendar() {
                     <button onClick={()=>openNew(modalDate!)} className="px-3 py-1 bg-blue-500 text-white rounded">Добавить съемку</button>
                   )}
                   {current && !current.completed && <button onClick={startEdit} className="px-3 py-1 border rounded">Редактировать</button>}
-                  {current && !current.completed && <button onClick={remove} className="px-3 py-1 border rounded text-red-600">Удалить</button>}
+                  {current && <button onClick={confirmDelete} className="px-3 py-1 border rounded text-red-600">Удалить</button>}
                   {current && !current.completed && (
                     <button onClick={() => setFinishModal(true)} className="px-3 py-1 border rounded text-green-600">Завершить</button>
                   )}
@@ -399,7 +404,7 @@ function Calendar() {
                 onChange={e => setFinishManagers(Array.isArray(finishManagers) ? finishManagers.map((x,i)=>i===idx?e.target.value:x) : [])}
               >
                 <option value="">Выберите менеджера</option>
-                {Array.isArray(users) && users.filter(u=>(u.role==='smm_manager' || u.role==='head_smm') && u.role!=='inactive' && (!Array.isArray(finishManagers) || !finishManagers.includes(String(u.id)) || String(u.id)===m)).map(u=>(
+                {Array.isArray(users) && users.filter(u=>(u.role==='smm_manager') && u.role!=='inactive' && (!Array.isArray(finishManagers) || !finishManagers.includes(String(u.id)) || String(u.id)===m)).map(u=>(
                   <option key={u.id} value={u.id}>{u.name}</option>
                 ))}
               </select>
@@ -440,6 +445,34 @@ function Calendar() {
             </ul>
             <div className="flex justify-end pt-2">
               <button onClick={()=>setColorInfo(false)} className="px-3 py-1 border rounded">Закрыть</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+          <div className="bg-white p-6 rounded w-96 space-y-4">
+            <h2 className="text-xl font-semibold text-red-600">Подтверждение удаления</h2>
+            <p>Вы уверены, что хотите удалить съемку "{current?.title}"?</p>
+            {current?.completed && (
+              <p className="text-sm text-orange-600 font-medium">
+                Внимание: Эта съемка уже завершена. Удаление приведет к полной потере данных.
+              </p>
+            )}
+            <div className="flex justify-end space-x-2 pt-4">
+              <button
+                onClick={() => setDeleteConfirm(false)}
+                className="px-4 py-2 border rounded hover:bg-gray-50"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={remove}
+                className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
+              >
+                Удалить
+              </button>
             </div>
           </div>
         </div>

@@ -26,9 +26,7 @@ def get_local_time_utc5():
 class RoleEnum(str, enum.Enum):
     designer = "designer"
     smm_manager = "smm_manager"
-    head_smm = "head_smm"
     admin = "admin"
-    digital = "digital"
     inactive = "inactive"  # Для бывших сотрудников
 
 class User(Base):
@@ -64,6 +62,8 @@ class TaskStatus(str, enum.Enum):
     in_progress = "in_progress"  # Задача принята в работу
     done = "done"  # Задача завершена
     cancelled = "cancelled"  # Задача отменена
+    overdue = "overdue"  # Задача просрочена
+    archived = "archived"  # Задача заархивирована (скрыта)
 
 class RecurrenceType(str, enum.Enum):
     daily = "daily"
@@ -88,13 +88,15 @@ class Task(Base):
     accepted_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     resume_count = Column(Integer, default=0)  # Количество возобновлений задачи
-    
+    overdue_count = Column(Integer, default=0)  # Количество просрочек для повторяющихся задач
+
     # Поля для повторяющихся задач
     is_recurring = Column(Boolean, default=False, nullable=True)  # Является ли задача повторяющейся
     recurrence_type = Column(Enum(RecurrenceType), nullable=True)  # daily, weekly, monthly
     recurrence_time = Column(String, nullable=True)  # Время повтора в формате HH:MM
     recurrence_days = Column(String, nullable=True)  # Дни недели/месяца для повтора (1,2,3,4,5 или 15)
     next_run_at = Column(DateTime, nullable=True)  # Когда создать следующую копию
+    original_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)  # Ссылка на оригинальную повторяющуюся задачу
     
 
     executor = relationship(
@@ -551,6 +553,15 @@ class WhiteboardProjectPermission(Base):
     
     # Уникальность по проекту и пользователю
     __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+
+
+class DatabaseVersion(Base):
+    __tablename__ = "database_version"
+
+    id = Column(Integer, primary_key=True, index=True)
+    version = Column(String, nullable=False)  # Timestamp or version string
+    updated_at = Column(DateTime, default=get_local_time_utc5, onupdate=get_local_time_utc5)
+    description = Column(String, nullable=True)  # Description of what changed
 
 
 class WhiteboardBoard(Base):

@@ -273,7 +273,7 @@ function DigitalList() {
             </select>
             <select className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors" value={filterExec} onChange={e => setFilterExec(e.target.value)}>
               <option value="">Все исполнители</option>
-              {Array.isArray(users) && users.filter(u => u.role === 'digital').map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
+              {Array.isArray(users) && users.map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
             </select>
             <select className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
               <option value="">Все статусы</option>
@@ -452,7 +452,7 @@ function DigitalList() {
             </select>
             <select className="border p-2 w-full" value={executor} onChange={e => setExecutor(e.target.value)}>
               <option value="">Выберите исполнителя</option>
-              {users.filter(u => u.role === 'digital').map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
             {!monthly && (
               <div className="flex gap-2">

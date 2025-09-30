@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { API_URL } from '../api'
+import { isAdmin } from '../utils/roleUtils'
 import {
   BarChart,
   Bar,
@@ -68,7 +69,7 @@ function ServiceTypesAnalytics() {
       })
       if (response.ok) {
         const data = await response.json()
-        setUsers(data.filter((user: any) => user.is_active && user.role !== 'admin'))
+        setUsers(data.filter((user: any) => user.is_active && !isAdmin(user.role)))
       }
     } catch (error) {
       console.error('Error loading users:', error)
@@ -155,10 +156,10 @@ function ServiceTypesAnalytics() {
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">
-          Аналитика по типам услуг
+          Аналитика по типам задач
         </h1>
         <p className="text-gray-600">
-          Анализ созданных и завершенных задач по типам услуг для каждого сотрудника
+          Анализ созданных и завершенных задач по типам задач для каждого сотрудника
         </p>
       </div>
 
@@ -233,7 +234,7 @@ function ServiceTypesAnalytics() {
                   <Activity className="h-6 w-6 text-green-600" />
                 </div>
                 <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-600">Типов услуг</p>
+                  <p className="text-sm font-medium text-gray-600">Типов задач</p>
                   <p className="text-2xl font-bold text-gray-900">{analytics.total_service_types.length}</p>
                 </div>
               </div>
@@ -271,7 +272,7 @@ function ServiceTypesAnalytics() {
           {/* Основная гистограмма */}
           <div className="bg-white p-6 rounded-lg shadow mb-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              Статистика по типам услуг
+              Статистика по типам задач
             </h2>
             <div className="h-96">
               <ResponsiveContainer width="100%" height="100%">

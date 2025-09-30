@@ -21,6 +21,7 @@ import ExpenseReports from './pages/ExpenseReports'
 import PersonalExpenses from './pages/PersonalExpenses'
 import LeadBoard from './pages/LeadBoard'
 import { SidebarProvider, useSidebar } from './contexts/SidebarContext'
+import { ToastProvider } from './components/ToastNotification'
 
 function AppContent() {
   const [token, setToken] = useState(localStorage.getItem('token'))
@@ -116,9 +117,9 @@ function AppContent() {
     <div className="flex min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 relative">
       <Navbar key="navbar-always-visible" />
       
-      <main 
+      <main
         className={`
-          flex-1 px-4 sm:px-8 lg:px-[100px] py-8 max-w-full min-h-screen transition-all duration-300 ease-in-out
+          flex-1 px-2 sm:px-4 lg:px-8 xl:px-12 2xl:px-16 py-4 lg:py-8 max-w-full min-h-screen transition-all duration-300 ease-in-out overflow-x-hidden
           ${isCollapsed ? 'ml-20' : 'ml-64'}
         `}
       >
@@ -153,7 +154,9 @@ function AppContent() {
 function App() {
   return (
     <SidebarProvider>
-      <AppContent />
+      <ToastProvider>
+        <AppContent />
+      </ToastProvider>
     </SidebarProvider>
   )
 }

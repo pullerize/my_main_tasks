@@ -37,11 +37,11 @@ export const formatDateUTC5 = (isoString: string): string => {
   try {
     const date = new Date(isoString);
     const utc5Date = new Date(date.getTime() + 5 * 60 * 60 * 1000); // +5 часов
-    const day = utc5Date.getDate().toString().padStart(2, '0');
-    const month = (utc5Date.getMonth() + 1).toString().padStart(2, '0');
-    const year = utc5Date.getFullYear();
-    const hours = utc5Date.getHours().toString().padStart(2, '0');
-    const minutes = utc5Date.getMinutes().toString().padStart(2, '0');
+    const day = utc5Date.getUTCDate().toString().padStart(2, '0');
+    const month = (utc5Date.getUTCMonth() + 1).toString().padStart(2, '0');
+    const year = utc5Date.getUTCFullYear();
+    const hours = utc5Date.getUTCHours().toString().padStart(2, '0');
+    const minutes = utc5Date.getUTCMinutes().toString().padStart(2, '0');
     return `${day}.${month}.${year} ${hours}:${minutes}`;
   } catch (error) {
     return '';
@@ -90,8 +90,45 @@ export const formatDateTimeUTC5 = (isoString: string): string => {
   return formatDateUTC5(isoString);
 };
 
-// Отформатировать дедлайн БЕЗ добавления 5 часов
+// Отформатировать дедлайн с добавлением 5 часов к UTC времени
 export const formatDeadline = (isoString: string): string => {
+  if (!isoString) return '';
+  try {
+    // Если строка времени не имеет суффикса Z, добавляем его, чтобы браузер интерпретировал её как UTC
+    let normalizedString = isoString;
+    if (!isoString.endsWith('Z') && !isoString.includes('+') && !isoString.includes('-', 10)) {
+      normalizedString = isoString + 'Z';
+    }
+
+    const date = new Date(normalizedString);
+    const utc5Date = new Date(date.getTime() + 5 * 60 * 60 * 1000); // +5 часов
+    const day = utc5Date.getUTCDate().toString().padStart(2, '0');
+    const month = (utc5Date.getUTCMonth() + 1).toString().padStart(2, '0');
+    const year = utc5Date.getUTCFullYear();
+    const hours = utc5Date.getUTCHours().toString().padStart(2, '0');
+    const minutes = utc5Date.getUTCMinutes().toString().padStart(2, '0');
+    return `${day}.${month}.${year} ${hours}:${minutes}`;
+  } catch (error) {
+    return '';
+  }
+};
+
+// Отформатировать дедлайн с учетом цветовой индикации
+export const formatDeadlineUTC5 = (isoString: string): string => {
+  if (!isoString) return '';
+  try {
+    const formatted = formatDeadline(isoString);
+
+    // Возвращаем только форматированную дату, без стилей
+    // Стили будут применяться в компоненте
+    return formatted;
+  } catch (error) {
+    return '';
+  }
+};
+
+// Форматировать дату без добавления смещения (для дат, которые уже в UTC+5 на бэкенде)
+export const formatDateAsIs = (isoString: string): string => {
   if (!isoString) return '';
   try {
     const date = new Date(isoString);
@@ -106,29 +143,21 @@ export const formatDeadline = (isoString: string): string => {
   }
 };
 
-// Отформатировать дедлайн с учетом цветовой индикации
-export const formatDeadlineUTC5 = (isoString: string): string => {
-  if (!isoString) return '';
-  try {
-    const formatted = formatDeadline(isoString);
-    
-    // Возвращаем только форматированную дату, без стилей
-    // Стили будут применяться в компоненте
-    return formatted;
-  } catch (error) {
-    return '';
-  }
-};
-
 // Получить статус дедлайна (для применения стилей в компонентах)
 export const getDeadlineStatus = (isoString: string): 'overdue' | 'urgent' | 'normal' => {
   if (!isoString) return 'normal';
   try {
-    const date = new Date(isoString);
+    // Если строка времени не имеет суффикса Z, добавляем его, чтобы браузер интерпретировал её как UTC
+    let normalizedString = isoString;
+    if (!isoString.endsWith('Z') && !isoString.includes('+') && !isoString.includes('-', 10)) {
+      normalizedString = isoString + 'Z';
+    }
+
+    const date = new Date(normalizedString);
     const now = new Date();
     const diffTime = date.getTime() - now.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
+
     if (diffDays < 0) return 'overdue'; // Просрочено
     if (diffDays <= 2) return 'urgent';  // Срочно (осталось 2 дня или меньше)
     return 'normal'; // Нормально

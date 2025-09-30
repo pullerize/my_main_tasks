@@ -64,7 +64,8 @@ def calculate_next_run_at(recurrence_type: str, db: Session = None, generation_t
                         return check_date
         else:
             # Если дни не указаны, работаем как раньше - каждый день
-            if base_date < current_date:
+            # Убираем валидацию времени - пользователь может ставить задачи на любое время
+            if current_date > base_date:
                 return current_date
             else:
                 return current_date + timedelta(days=1)
@@ -185,10 +186,68 @@ def update_user(db: Session, user_id: int, user: schemas.UserUpdate) -> Optional
 
 
 def delete_user(db: Session, user_id: int) -> None:
+    """Удаляет пользователя и все связанные записи"""
     user = get_user(db, user_id)
-    if user:
+    if not user:
+        # Пользователь уже не существует, считаем операцию успешной
+        return
+
+    try:
+        # Удаляем связанные записи или устанавливаем NULL
+
+        # 1. Удаляем расходы сотрудника
+        db.query(models.EmployeeExpense).filter(models.EmployeeExpense.user_id == user_id).delete()
+
+        # 2. Устанавливаем NULL для проектных расходов
+        db.query(models.ProjectExpense).filter(models.ProjectExpense.created_by == user_id).update({"created_by": None})
+
+        # 3. Устанавливаем NULL для общих расходов
+        db.query(models.CommonExpense).filter(models.CommonExpense.created_by == user_id).update({"created_by": None})
+
+        # 4. Устанавливаем NULL для digital проектов
+        db.query(models.DigitalProject).filter(models.DigitalProject.executor_id == user_id).update({"executor_id": None})
+
+        # 5. Удаляем файлы ресурсов
+        db.query(models.ResourceFile).filter(models.ResourceFile.uploaded_by == user_id).delete()
+
+        # 6. Устанавливаем NULL для лидов (менеджер)
+        db.query(models.Lead).filter(models.Lead.manager_id == user_id).update({"manager_id": None})
+
+        # 7. Удаляем заметки лидов
+        db.query(models.LeadNote).filter(models.LeadNote.user_id == user_id).delete()
+
+        # 8. Удаляем прикрепления лидов
+        db.query(models.LeadAttachment).filter(models.LeadAttachment.user_id == user_id).delete()
+
+        # 9. Удаляем историю лидов
+        db.query(models.LeadHistory).filter(models.LeadHistory.user_id == user_id).delete()
+
+        # 10. Удаляем права доступа к whiteboard проектам
+        db.query(models.WhiteboardProjectPermission).filter(models.WhiteboardProjectPermission.user_id == user_id).delete()
+
+        # 11. Устанавливаем NULL для созданных whiteboard проектов
+        db.query(models.WhiteboardProject).filter(models.WhiteboardProject.created_by == user_id).update({"created_by": None})
+
+        # 12. Устанавливаем NULL для созданных whiteboard досок
+        db.query(models.WhiteboardBoard).filter(models.WhiteboardBoard.created_by == user_id).update({"created_by": None})
+
+        # Обрабатываем задачи
+        try:
+            # Устанавливаем NULL для executor_id в задачах (вместо assigned_to)
+            db.query(models.Task).filter(models.Task.executor_id == user_id).update({"executor_id": None})
+            # Устанавливаем NULL для author_id в задачах
+            db.query(models.Task).filter(models.Task.author_id == user_id).update({"author_id": None})
+        except Exception as e:
+            print(f"Warning: Error updating tasks: {e}")
+            pass
+
+        # Наконец, удаляем самого пользователя
         db.delete(user)
         db.commit()
+
+    except Exception as e:
+        db.rollback()
+        raise e
 
 
 def authorize_telegram_user(db: Session, telegram_id: int, username: Optional[str] = None) -> Optional[models.User]:
@@ -243,6 +302,58 @@ def check_telegram_user_status(db: Session, telegram_id: Optional[int] = None, u
     return user
 
 
+def find_and_link_telegram_user(db: Session, telegram_id: int, username: Optional[str] = None, first_name: Optional[str] = None, last_name: Optional[str] = None) -> Optional[models.User]:
+    """Найти пользователя без telegram_id и привязать к нему telegram данные"""
+    user = None
+
+    # Сначала проверяем, есть ли уже пользователь с этим telegram_id
+    existing_user = db.query(models.User).filter(
+        models.User.telegram_id == telegram_id,
+        models.User.is_active == True
+    ).first()
+    if existing_user:
+        return existing_user
+
+    # Если username есть, ищем по нему
+    if username:
+        user = db.query(models.User).filter(
+            models.User.telegram_username == username.lower(),
+            models.User.is_active == True
+        ).first()
+
+        if not user:
+            user = db.query(models.User).filter(
+                models.User.telegram_username.ilike(username),
+                models.User.is_active == True
+            ).first()
+
+    # Если пользователь не найден по username, ищем по имени среди пользователей без telegram_id
+    if not user and first_name:
+        full_name = f"{first_name} {last_name or ''}".strip()
+        users_without_telegram = db.query(models.User).filter(
+            models.User.telegram_id.is_(None),
+            models.User.is_active == True
+        ).all()
+
+        # Ищем по совпадению имени
+        for u in users_without_telegram:
+            if u.name and (full_name.lower() in u.name.lower() or u.name.lower() in full_name.lower()):
+                user = u
+                break
+
+    # Если пользователь найден, обновляем его telegram данные
+    if user:
+        user.telegram_id = telegram_id
+        if username and not user.telegram_username:
+            user.telegram_username = username.lower()
+        user.telegram_registered_at = models.get_local_time_utc5()
+        db.commit()
+        db.refresh(user)
+        return user
+
+    return None
+
+
 def get_operators(db: Session) -> List[models.Operator]:
     return db.query(models.Operator).all()
 
@@ -289,22 +400,59 @@ def delete_operator(db: Session, operator_id: int) -> None:
 
 
 def get_tasks(db: Session, skip: int = 0, limit: int = 100) -> List[models.Task]:
-    return db.query(models.Task).offset(skip).limit(limit).all()
+    # Скрываем архивные задачи из основного списка
+    query = db.query(models.Task).filter(models.Task.status != models.TaskStatus.archived)
+
+    # Сортировка: в работе сверху, новые в середине, завершенные внизу
+    from sqlalchemy import case
+    status_priority = case(
+        (models.Task.status == models.TaskStatus.in_progress, 1),  # В работе - наивысший приоритет
+        (models.Task.status == models.TaskStatus.new, 2),         # Новые - средний приоритет
+        (models.Task.status == models.TaskStatus.overdue, 3),     # Просроченные - важные
+        (models.Task.status == models.TaskStatus.done, 4),        # Завершенные - низкий приоритет
+        (models.Task.status == models.TaskStatus.cancelled, 5),   # Отмененные - самый низкий приоритет
+        else_=6  # На случай других статусов
+    )
+
+    return query.order_by(status_priority, models.Task.created_at.desc()).offset(skip).limit(limit).all()
 
 
 def get_tasks_for_user(db: Session, user: models.User, skip: int = 0, limit: int = 100) -> List[models.Task]:
-    q = db.query(models.Task).join(models.User, models.Task.executor_id == models.User.id)
+    # Используем LEFT JOIN, чтобы включить задачи без исполнителя
+    q = db.query(models.Task).outerjoin(models.User, models.Task.executor_id == models.User.id)
+
     if user.role == models.RoleEnum.admin:
+        # Админ видит все задачи
         pass
     elif user.role == models.RoleEnum.smm_manager:
+        # SMM менеджер видит задачи дизайнеров, SMM менеджеров и неназначенные
         q = q.filter(
-            models.User.role.in_(
-                [models.RoleEnum.designer, models.RoleEnum.smm_manager]
-            )
+            (models.User.role.in_([models.RoleEnum.designer, models.RoleEnum.smm_manager])) |
+            (models.Task.executor_id.is_(None))
         )
     elif user.role == models.RoleEnum.designer:
-        q = q.filter(models.User.role == models.RoleEnum.designer)
-    return q.order_by(models.Task.created_at.desc()).offset(skip).limit(limit).all()
+        # Дизайнер видит только задачи дизайнеров и неназначенные
+        q = q.filter(
+            (models.User.role == models.RoleEnum.designer) |
+            (models.Task.executor_id.is_(None))
+        )
+
+    # Скрываем архивные задачи из основного списка
+    q = q.filter(models.Task.status != models.TaskStatus.archived)
+
+    # Сортировка: в работе сверху, новые в середине, завершенные внизу
+    # Используем CASE для создания приоритета статусов
+    from sqlalchemy import case
+    status_priority = case(
+        (models.Task.status == models.TaskStatus.in_progress, 1),  # В работе - наивысший приоритет
+        (models.Task.status == models.TaskStatus.new, 2),         # Новые - средний приоритет
+        (models.Task.status == models.TaskStatus.overdue, 3),     # Просроченные - важные
+        (models.Task.status == models.TaskStatus.done, 4),        # Завершенные - низкий приоритет
+        (models.Task.status == models.TaskStatus.cancelled, 5),   # Отмененные - самый низкий приоритет
+        else_=6  # На случай других статусов
+    )
+
+    return q.order_by(status_priority, models.Task.created_at.desc()).offset(skip).limit(limit).all()
 
 
 
@@ -2169,7 +2317,8 @@ def get_service_types_analytics(
             models.Task.created_at >= start_datetime,
             models.Task.created_at < end_datetime,
             models.Task.task_type.isnot(None),
-            models.Task.task_type != ''
+            models.Task.task_type != '',
+            models.Task.original_task_id.is_(None)  # Исключаем повторяющиеся задачи
         ).group_by(models.Task.task_type)
 
         created_data = {row.task_type: row.created_count for row in created_query.all()}
@@ -2183,7 +2332,8 @@ def get_service_types_analytics(
             models.Task.created_at >= start_datetime,
             models.Task.created_at < end_datetime,
             models.Task.task_type.isnot(None),
-            models.Task.task_type != ''
+            models.Task.task_type != '',
+            models.Task.original_task_id.is_(None)  # Исключаем повторяющиеся задачи
         ).group_by(models.Task.task_type)
 
         assigned_data = {row.task_type: row.assigned_count for row in assigned_query.all()}
@@ -2198,7 +2348,8 @@ def get_service_types_analytics(
             models.Task.created_at >= start_datetime,
             models.Task.created_at < end_datetime,
             models.Task.task_type.isnot(None),
-            models.Task.task_type != ''
+            models.Task.task_type != '',
+            models.Task.original_task_id.is_(None)  # Исключаем повторяющиеся задачи
         ).group_by(models.Task.task_type)
 
         completed_data = {row.task_type: row.completed_count for row in completed_query.all()}

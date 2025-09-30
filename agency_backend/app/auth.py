@@ -33,7 +33,14 @@ def get_db():
 
 
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        if not hashed_password:
+            return False
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception as e:
+        print(f"Password verification error: {e}")
+        print(f"Hash format: '{hashed_password}'")
+        return False
 
 
 def get_password_hash(password):
@@ -95,8 +102,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
 
 
 def get_current_active_user(current_user: models.User = Depends(get_current_user)):
-    # Check if user is inactive
-    if current_user.role == models.RoleEnum.inactive:
+    # Check if user is inactive (either by role or is_active flag)
+    if current_user.role == models.RoleEnum.inactive or not current_user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive"

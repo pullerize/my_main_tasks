@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { API_URL } from '../api'
+import { ConfirmationModal } from '../components/ConfirmationModal'
+import { useToast } from '../components/ToastNotification'
 
 interface Lead {
   id: number
@@ -150,15 +152,15 @@ function LeadCard({ lead, onUpdate, onDragStart, onCardClick, isCompact = false 
   if (isCompact) {
     return (
       <div 
-        className={`p-3 rounded-lg shadow-sm border-l-4 cursor-pointer transition-all ${getActivityColor(lead.last_activity_at)} mb-2`}
+        className={`p-2 lg:p-3 rounded-lg shadow-sm border-l-4 cursor-pointer transition-all ${getActivityColor(lead.last_activity_at)} mb-2`}
         draggable
         onDragStart={(e) => onDragStart(e, lead)}
         onClick={() => onCardClick(lead)}
       >
         <div className="flex justify-between items-center">
           <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-medium text-gray-900 truncate mb-1">{lead.company_name || lead.title}</h3>
-            <div className="text-sm text-gray-600 space-y-1">
+            <h3 className="text-sm lg:text-xs font-medium text-gray-900 truncate mb-1">{lead.company_name || lead.title}</h3>
+            <div className="text-sm lg:text-xs text-gray-600 space-y-1">
               {lead.manager && (
                 <div className="truncate">📋 {lead.manager.name}</div>
               )}
@@ -171,16 +173,16 @@ function LeadCard({ lead, onUpdate, onDragStart, onCardClick, isCompact = false 
 
   return (
     <div 
-      className={`p-3 rounded-lg shadow-sm border-l-4 cursor-pointer transition-all ${getActivityColor(lead.last_activity_at)}`}
+      className={`p-2 lg:p-3 rounded-lg shadow-sm border-l-4 cursor-pointer transition-all ${getActivityColor(lead.last_activity_at)}`}
       draggable
       onDragStart={(e) => onDragStart(e, lead)}
     >
       <div onClick={() => onCardClick(lead)}>
         <div className="flex justify-between items-start mb-2">
-          <h3 className="text-sm font-medium text-gray-900 truncate">{lead.company_name || lead.title}</h3>
+          <h3 className="text-sm lg:text-xs font-medium text-gray-900 truncate">{lead.company_name || lead.title}</h3>
         </div>
         
-        <div className="text-xs text-gray-600 mb-2 space-y-1">
+        <div className="text-xs lg:text-xs text-gray-600 mb-2 space-y-1">
           {lead.client_name && <div>{lead.client_name}</div>}
           {lead.client_contact && <div>📞 {lead.client_contact}</div>}
           {lead.manager && <div>📋 {lead.manager.name}</div>}
@@ -298,6 +300,21 @@ function LeadBoard() {
   const [isEditingLead, setIsEditingLead] = useState(false)
   const [editLeadData, setEditLeadData] = useState<any>({})
   const [phoneNumber, setPhoneNumber] = useState('')
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [isUploadingFile, setIsUploadingFile] = useState(false)
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    type?: 'warning' | 'danger' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {}
+  })
+  const { showToast } = useToast()
 
   const loadLeads = async () => {
     const token = localStorage.getItem('token')
@@ -377,9 +394,16 @@ function LeadBoard() {
   }
 
   const deleteLead = async (leadId: number) => {
-    if (!confirm('Вы уверены, что хотите удалить эту заявку? Это действие необратимо.')) {
-      return
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: 'Удаление заявки',
+      message: 'Вы уверены, что хотите удалить эту заявку? Это действие необратимо.',
+      type: 'danger',
+      onConfirm: () => performDeleteLead(leadId)
+    })
+  }
+
+  const performDeleteLead = async (leadId: number) => {
     
     const token = localStorage.getItem('token')
     try {
@@ -434,6 +458,136 @@ function LeadBoard() {
     }
   }
 
+  const uploadFile = async (leadId: number, file: File) => {
+    console.log('uploadFile called with:', leadId, file)
+    if (!file) {
+      console.log('No file provided')
+      return
+    }
+
+    const token = localStorage.getItem('token')
+    console.log('Token:', token ? 'exists' : 'missing')
+    const formData = new FormData()
+    formData.append('file', file)
+
+    try {
+      setIsUploadingFile(true)
+      console.log(`Making request to: ${API_URL}/leads/${leadId}/attachments/`)
+      const response = await fetch(`${API_URL}/leads/${leadId}/attachments/`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`
+        },
+        body: formData
+      })
+
+      console.log('Upload response status:', response.status)
+      if (response.ok) {
+        console.log('File uploaded successfully')
+        setSelectedFile(null)
+        // Обновить заявку чтобы показать новый файл
+        const refreshResponse = await fetch(`${API_URL}/leads/${leadId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        if (refreshResponse.ok) {
+          const refreshedLead = await refreshResponse.json()
+          setSelectedLead(refreshedLead)
+          console.log('Lead refreshed with attachments:', refreshedLead.attachments)
+        }
+        loadLeads()
+        showToast('Файл успешно загружен!', 'success')
+      } else {
+        const errorText = await response.text()
+        console.error('Upload failed:', response.status, errorText)
+        showToast('Ошибка при загрузке файла: ' + errorText, 'error')
+      }
+    } catch (error) {
+      console.error('Error uploading file:', error)
+      showToast('Ошибка при загрузке файла', 'error')
+    } finally {
+      setIsUploadingFile(false)
+    }
+  }
+
+  const handleDownloadAttachment = async (attachmentId: number, filename: string) => {
+    const token = localStorage.getItem('token')
+    if (!token) return
+
+    try {
+      const response = await fetch(`${API_URL}/leads/attachments/${attachmentId}/download`, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      })
+
+      if (response.ok) {
+        const blob = await response.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
+      } else {
+        showToast('Ошибка при скачивании файла', 'error')
+      }
+    } catch (error) {
+      console.error('Error downloading file:', error)
+      showToast('Ошибка при скачивании файла', 'error')
+    }
+  }
+
+  const handleDeleteAttachment = async (attachmentId: number) => {
+    const token = localStorage.getItem('token')
+    if (!token || !selectedLead) return
+
+    setConfirmModal({
+      isOpen: true,
+      title: 'Удаление файла',
+      message: 'Вы уверены, что хотите удалить этот файл?',
+      type: 'warning',
+      onConfirm: () => performDeleteAttachment(attachmentId, token)
+    })
+  }
+
+  const performDeleteAttachment = async (attachmentId: number, token: string) => {
+
+    try {
+      const response = await fetch(`${API_URL}/leads/attachments/${attachmentId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      })
+
+      if (response.ok) {
+        // Обновить заявку чтобы убрать удаленный файл
+        const refreshResponse = await fetch(`${API_URL}/leads/${selectedLead.id}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        if (refreshResponse.ok) {
+          const refreshedLead = await refreshResponse.json()
+          setSelectedLead(refreshedLead)
+        }
+        loadLeads()
+        showToast('Файл успешно удален!', 'success')
+      } else {
+        const errorText = await response.text()
+        console.error('Delete failed:', response.status, errorText)
+        if (response.status === 404) {
+          showToast('Файл не найден или у вас нет прав на его удаление', 'error')
+        } else {
+          showToast('Ошибка при удалении файла: ' + errorText, 'error')
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting file:', error)
+      showToast('Ошибка при удалении файла', 'error')
+    }
+  }
+
   const createLead = async (formData: FormData) => {
     const token = localStorage.getItem('token')
     try {
@@ -482,38 +636,38 @@ function LeadBoard() {
   }
 
   return (
-    <div className="p-4 max-w-none mx-auto">
+    <div className="p-2 lg:p-4 max-w-none mx-auto overflow-x-hidden">
       {/* Дашборд */}
       {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white p-4 rounded-lg shadow">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 lg:gap-4 mb-4 lg:mb-6">
+          <div className="bg-white p-3 lg:p-4 rounded-lg shadow">
             <div className="text-2xl font-bold text-blue-600">{stats.total_leads}</div>
-            <div className="text-sm text-gray-600">Всего заявок</div>
+            <div className="text-sm lg:text-xs text-gray-600">Всего заявок</div>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow">
+          <div className="bg-white p-3 lg:p-4 rounded-lg shadow">
             <div className="text-2xl font-bold text-yellow-600">{stats.active_leads}</div>
-            <div className="text-sm text-gray-600">Активные</div>
+            <div className="text-sm lg:text-xs text-gray-600">Активные</div>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow">
+          <div className="bg-white p-3 lg:p-4 rounded-lg shadow">
             <div className="text-2xl font-bold text-green-600">{stats.conversion_rate}%</div>
-            <div className="text-sm text-gray-600">Конверсия</div>
+            <div className="text-sm lg:text-xs text-gray-600">Конверсия</div>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow">
+          <div className="bg-white p-3 lg:p-4 rounded-lg shadow">
             <div className="text-2xl font-bold text-purple-600">{formatDuration(stats.average_processing_time)}</div>
-            <div className="text-sm text-gray-600">Средняя длительность сделки</div>
+            <div className="text-sm lg:text-xs text-gray-600">Средняя длительность сделки</div>
           </div>
         </div>
       )}
 
       {/* Фильтры и поиск */}
-      <div className="bg-white p-4 rounded-lg shadow mb-6">
-        <div className="flex flex-wrap gap-4 items-center mb-4">
+      <div className="bg-white p-3 lg:p-4 rounded-lg shadow mb-4 lg:mb-6">
+        <div className="flex flex-wrap gap-2 lg:gap-4 items-center mb-3 lg:mb-4">
           <input
             type="text"
             placeholder="Поиск по названию или клиенту..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="flex-1 min-w-64 px-3 py-2 border rounded-lg"
+            className="flex-1 min-w-0 px-3 py-2 border rounded-lg"
           />
 
           <input
@@ -535,12 +689,12 @@ function LeadBoard() {
         {/* Фильтры по дате */}
         <div className="flex flex-wrap gap-4 items-center">
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">Период создания:</label>
+            <label className="text-sm lg:text-xs font-medium text-gray-700">Период создания:</label>
             <input
               type="date"
               value={filterDateFrom}
               onChange={(e) => setFilterDateFrom(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm"
+              className="px-3 py-2 border rounded-lg text-sm lg:text-xs"
               placeholder="От"
             />
             <span className="text-gray-500">—</span>
@@ -548,7 +702,7 @@ function LeadBoard() {
               type="date"
               value={filterDateTo}
               onChange={(e) => setFilterDateTo(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm"
+              className="px-3 py-2 border rounded-lg text-sm lg:text-xs"
               placeholder="До"
             />
             {(filterDateFrom || filterDateTo) && (
@@ -568,22 +722,22 @@ function LeadBoard() {
       </div>
 
       {/* Канбан-доска */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 2xl:grid-cols-7 gap-1 lg:gap-2 overflow-x-auto">
         {Object.entries(LEAD_STATUSES).map(([status, config]) => (
-          <div 
-            key={status} 
-            className="bg-gray-50 rounded-lg p-3"
+          <div
+            key={status}
+            className="bg-gray-50 rounded-lg p-1 lg:p-2"
             onDragOver={handleDragOver}
             onDrop={(e) => handleDrop(e, status)}
           >
-            <div className={`flex items-center justify-between mb-3 pb-2 border-b-2 ${config.color.replace('bg-', 'border-')}`}>
-              <h2 className="text-sm font-semibold text-gray-800">{config.label}</h2>
-              <span className="text-xs text-gray-500 bg-white px-2 py-1 rounded">
+            <div className={`flex items-center justify-between mb-2 pb-1 border-b-2 ${config.color.replace('bg-', 'border-')}`}>
+              <h2 className="text-xs font-semibold text-gray-800 truncate">{config.label}</h2>
+              <span className="text-xs text-gray-500 bg-white px-1 py-0.5 rounded">
                 {groupedLeads[status]?.length || 0}
               </span>
             </div>
             
-            <div className="space-y-2 min-h-24">
+            <div className="space-y-1 min-h-16">
               {groupedLeads[status]?.map(lead => {
                 const isCompact = (groupedLeads[status]?.length || 0) > 4
                 return (
@@ -609,9 +763,9 @@ function LeadBoard() {
 
       {/* Модальное окно создания заявки */}
       {showCreateForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" style={{ zIndex: 9999 }}>
           <div className="bg-white p-6 rounded-lg w-full max-w-lg">
-            <h2 className="text-xl font-bold mb-4">Новая заявка</h2>
+            <h2 className="text-lg lg:text-base font-bold mb-4">Новая заявка</h2>
             <form onSubmit={(e) => {
               e.preventDefault()
               const formData = new FormData(e.target as HTMLFormElement)
@@ -659,7 +813,7 @@ function LeadBoard() {
                 </div>
                 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm lg:text-xs font-medium text-gray-700 mb-2">
                     Источник заявки
                   </label>
                   <select
@@ -723,8 +877,8 @@ function LeadBoard() {
 
       {/* Детальное модальное окно заявки */}
       {selectedLead && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg w-full max-w-6xl max-h-[95vh] overflow-hidden">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 9999 }}>
+          <div className="bg-white rounded-lg w-full max-w-[95vw] xl:max-w-6xl max-h-[95vh] overflow-hidden">
             <div className="p-6 border-b bg-gray-50">
               <div className="flex justify-between items-start">
                 <div className="flex-1">
@@ -747,13 +901,13 @@ function LeadBoard() {
                             description: selectedLead.description
                           })
                         }}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm lg:text-xs"
                       >
                         ✏️ Редактировать
                       </button>
                       <button
                         onClick={() => deleteLead(selectedLead.id)}
-                        className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm"
+                        className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm lg:text-xs"
                       >
                         🗑️ Удалить заявку
                       </button>
@@ -783,7 +937,7 @@ function LeadBoard() {
                             console.error('Error updating lead:', error)
                           }
                         }}
-                        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
+                        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm lg:text-xs"
                       >
                         💾 Сохранить
                       </button>
@@ -792,7 +946,7 @@ function LeadBoard() {
                           setIsEditingLead(false)
                           setEditLeadData({})
                         }}
-                        className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm"
+                        className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm lg:text-xs"
                       >
                         ❌ Отмена
                       </button>
@@ -812,38 +966,38 @@ function LeadBoard() {
               </div>
             </div>
             
-            <div className="flex h-full max-h-[calc(95vh-140px)]">
+            <div className="flex flex-col lg:flex-row h-full max-h-[calc(95vh-140px)]">
               {/* Основная информация */}
-              <div className="w-1/2 p-6 border-r overflow-y-auto">
-                <h3 className="text-lg font-semibold mb-4">Информация о заявке</h3>
+              <div className="w-full lg:w-1/2 p-3 lg:p-6 lg:border-r overflow-y-auto">
+                <h3 className="text-base lg:text-sm font-semibold mb-4">Информация о заявке</h3>
                 
                 <div className="space-y-4">
                   {!isEditingLead ? (
                     <>
                       <div>
-                        <label className="text-sm font-medium text-gray-700">Компания</label>
+                        <label className="text-sm lg:text-xs font-medium text-gray-700">Компания</label>
                         <p className="text-gray-900">{selectedLead.company_name || 'Не указана'}</p>
                       </div>
                       
                       <div>
-                        <label className="text-sm font-medium text-gray-700">Клиент</label>
+                        <label className="text-sm lg:text-xs font-medium text-gray-700">Клиент</label>
                         <p className="text-gray-900">{selectedLead.client_name || 'Не указан'}</p>
                       </div>
                       
                       <div>
-                        <label className="text-sm font-medium text-gray-700">Контакты</label>
+                        <label className="text-sm lg:text-xs font-medium text-gray-700">Контакты</label>
                         <p className="text-gray-900">{selectedLead.client_contact || 'Не указаны'}</p>
                       </div>
                       
                       <div>
-                        <label className="text-sm font-medium text-gray-700">Источник</label>
+                        <label className="text-sm lg:text-xs font-medium text-gray-700">Источник</label>
                         <p className="text-gray-900">{selectedLead.source}</p>
                       </div>
                     </>
                   ) : (
                     <>
                       <div>
-                        <label className="text-sm font-medium text-gray-700">Компания</label>
+                        <label className="text-sm lg:text-xs font-medium text-gray-700">Компания</label>
                         <input
                           type="text"
                           value={editLeadData.company_name || ''}
@@ -853,7 +1007,7 @@ function LeadBoard() {
                       </div>
                       
                       <div>
-                        <label className="text-sm font-medium text-gray-700">Клиент</label>
+                        <label className="text-sm lg:text-xs font-medium text-gray-700">Клиент</label>
                         <input
                           type="text"
                           value={editLeadData.client_name || ''}
@@ -863,7 +1017,7 @@ function LeadBoard() {
                       </div>
                       
                       <div>
-                        <label className="text-sm font-medium text-gray-700">Контакты</label>
+                        <label className="text-sm lg:text-xs font-medium text-gray-700">Контакты</label>
                         <input
                           type="text"
                           value={editLeadData.client_contact || ''}
@@ -873,7 +1027,7 @@ function LeadBoard() {
                       </div>
                       
                       <div>
-                        <label className="text-sm font-medium text-gray-700">Источник</label>
+                        <label className="text-sm lg:text-xs font-medium text-gray-700">Источник</label>
                         <select
                           value={editLeadData.source || ''}
                           onChange={(e) => setEditLeadData({...editLeadData, source: e.target.value})}
@@ -890,7 +1044,7 @@ function LeadBoard() {
                   )}
                   
                   <div>
-                    <label className="text-sm font-medium text-gray-700">Статус</label>
+                    <label className="text-sm lg:text-xs font-medium text-gray-700">Статус</label>
                     <select
                       value={selectedLead.status}
                       onChange={(e) => {
@@ -916,7 +1070,7 @@ function LeadBoard() {
                   </div>
                   
                   <div>
-                    <label className="text-sm font-medium text-gray-700">Описание</label>
+                    <label className="text-sm lg:text-xs font-medium text-gray-700">Описание</label>
                     {!isEditingLead ? (
                       <p className="text-gray-900 whitespace-pre-wrap">{selectedLead.description || 'Нет описания'}</p>
                     ) : (
@@ -931,7 +1085,7 @@ function LeadBoard() {
                   
                   {selectedLead.manager && (
                     <div>
-                      <label className="text-sm font-medium text-gray-700">Оформил заявку</label>
+                      <label className="text-sm lg:text-xs font-medium text-gray-700">Оформил заявку</label>
                       <p className="text-gray-900">{selectedLead.manager.name}</p>
                     </div>
                   )}
@@ -939,14 +1093,14 @@ function LeadBoard() {
                   
                   {selectedLead.proposal_amount && (
                     <div>
-                      <label className="text-sm font-medium text-gray-700">Сумма КП</label>
+                      <label className="text-sm lg:text-xs font-medium text-gray-700">Сумма КП</label>
                       <p className="text-gray-900">{selectedLead.proposal_amount.toLocaleString()} ₽</p>
                     </div>
                   )}
                   
                   {selectedLead.deal_amount && (
                     <div>
-                      <label className="text-sm font-medium text-gray-700">Сумма сделки</label>
+                      <label className="text-sm lg:text-xs font-medium text-gray-700">Сумма сделки</label>
                       <p className="text-gray-900 text-green-600 font-semibold">{selectedLead.deal_amount.toLocaleString()} ₽</p>
                     </div>
                   )}
@@ -954,19 +1108,19 @@ function LeadBoard() {
               </div>
               
               {/* История */}
-              <div className="w-1/2 p-6 flex flex-col">
-                <h3 className="text-lg font-semibold mb-4">История заявки</h3>
+              <div className="w-full lg:w-1/2 p-3 lg:p-6 flex flex-col">
+                <h3 className="text-base lg:text-sm font-semibold mb-4">История заявки</h3>
                 
                 <div className="flex-1 overflow-y-auto space-y-3">
                   {/* Создание заявки */}
                   <div className="bg-blue-50 p-3 rounded-lg border-l-4 border-blue-400">
                     <div className="flex justify-between items-start mb-2">
-                      <span className="font-medium text-sm text-blue-700">🆕 Заявка создана</span>
-                      <span className="text-xs text-gray-500">
+                      <span className="font-medium text-sm lg:text-xs text-blue-700">🆕 Заявка создана</span>
+                      <span className="text-xs lg:text-xs text-gray-500">
                         {new Date(selectedLead.created_at).toLocaleString('ru')}
                       </span>
                     </div>
-                    <p className="text-gray-700 text-sm">
+                    <p className="text-gray-700 text-sm lg:text-xs">
                       Заявка "{selectedLead.company_name || selectedLead.title}" создана
                     </p>
                   </div>
@@ -1058,7 +1212,7 @@ function LeadBoard() {
                               {/* Заголовок этапа */}
                               <div className={`p-3 rounded-lg border-l-4 ${getStatusColor(stage)} mb-3`}>
                                 <div className="flex justify-between items-center">
-                                  <h4 className="font-semibold text-sm">
+                                  <h4 className="font-semibold text-sm lg:text-xs">
                                     {getStatusIcon(stage)} {getStatusLabel(stage)}
                                   </h4>
                                   {stageStartDate && (
@@ -1068,7 +1222,7 @@ function LeadBoard() {
                                   )}
                                 </div>
                                 {stageChange && (
-                                  <p className="text-xs mt-1 opacity-80">
+                                  <p className="text-xs lg:text-xs mt-1 opacity-80">
                                     Переход выполнен: {stageChange.user?.name}
                                   </p>
                                 )}
@@ -1078,10 +1232,10 @@ function LeadBoard() {
                               {stageComments.map(comment => (
                                 <div key={comment.id} className="ml-6 mb-2 p-2 bg-gray-50 rounded border-l-2 border-gray-300">
                                   <div className="flex justify-between items-start mb-1">
-                                    <span className="font-medium text-xs text-gray-700">
-                                      💬 {comment.user.name}
+                                    <span className="font-medium text-xs lg:text-xs text-gray-700">
+                                      💬 {comment.user?.name || 'Неизвестный пользователь'}
                                     </span>
-                                    <span className="text-xs text-gray-500">
+                                    <span className="text-xs lg:text-xs text-gray-500">
                                       {new Date(comment.created_at).toLocaleString('ru')}
                                     </span>
                                   </div>
@@ -1110,7 +1264,42 @@ function LeadBoard() {
                     )
                   })()}
                 </div>
-                
+
+                {/* Прикрепленные файлы */}
+                {selectedLead.attachments && selectedLead.attachments.length > 0 && (
+                  <div className="border-t pt-4 mt-4">
+                    <h4 className="text-sm font-semibold text-gray-700 mb-3">Прикрепленные файлы</h4>
+                    <div className="space-y-2">
+                      {selectedLead.attachments.map((attachment, index) => (
+                        <div key={attachment.id || index} className="flex items-center justify-between p-2 bg-gray-50 rounded border">
+                          <div className="flex items-center gap-2">
+                            <span className="text-green-600">📎</span>
+                            <span className="text-sm font-medium">{attachment.filename}</span>
+                            <span className="text-xs lg:text-xs text-gray-500">
+                              {new Date(attachment.uploaded_at).toLocaleString('ru')}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleDownloadAttachment(attachment.id, attachment.filename)}
+                              className="px-2 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 transition-colors"
+                            >
+                              📥 Скачать
+                            </button>
+                            <button
+                              onClick={() => handleDeleteAttachment(attachment.id)}
+                              className="px-2 py-1 bg-red-600 text-white rounded text-xs hover:bg-red-700 transition-colors"
+                              title="Удалить файл"
+                            >
+                              🗑️ Удалить
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Форма добавления комментария */}
                 <div className="border-t pt-4 mt-4">
                   <h4 className="text-sm font-semibold text-gray-700 mb-3">Добавить комментарий</h4>
@@ -1121,14 +1310,40 @@ function LeadBoard() {
                     rows={3}
                     className="w-full px-3 py-2 border rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
+
+                  {/* Загрузка файлов */}
+                  <div className="mt-3 border-t pt-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <label className="text-sm font-medium text-gray-700">Прикрепить файл:</label>
+                      <input
+                        type="file"
+                        onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                        className="text-sm text-gray-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-sm file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200"
+                      />
+                      {selectedFile && (
+                        <button
+                          onClick={() => uploadFile(selectedLead.id, selectedFile)}
+                          className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700 transition-colors"
+                        >
+                          📎 Загрузить
+                        </button>
+                      )}
+                    </div>
+                    {selectedFile && (
+                      <p className="text-xs text-gray-600">
+                        Выбран файл: {selectedFile.name} ({Math.round(selectedFile.size / 1024)} КБ)
+                      </p>
+                    )}
+                  </div>
+
                   <div className="flex justify-between items-center mt-2">
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs lg:text-xs text-gray-500">
                       Комментарий будет добавлен к текущему этапу: "{LEAD_STATUSES[selectedLead.status]?.label || selectedLead.status}"
                     </span>
                     <button
                       onClick={() => addComment(selectedLead.id)}
                       disabled={!newComment.trim()}
-                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm lg:text-xs"
                     >
                       💬 Добавить комментарий
                     </button>
@@ -1139,6 +1354,15 @@ function LeadBoard() {
           </div>
         </div>
       )}
+
+      <ConfirmationModal
+        isOpen={confirmModal.isOpen}
+        onClose={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={confirmModal.onConfirm}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        type={confirmModal.type}
+      />
     </div>
   )
 }
