@@ -22,8 +22,8 @@ class AdminTaskHandlers:
         keyboard = [
             ["➕ Создать задачу"],
             ["📋 Активные задачи", "📁 Архив задач"],
-            ["🔧 Управление задачами"],
-            ["💰 Расходы", "📊 Отчеты"]
+            ["🆕 Не принятые в работу"],
+            ["🏠 Главное меню"]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -59,7 +59,6 @@ class AdminTaskHandlers:
     async def handle_role_selection_text(self, update, context):
         """Обработка выбора роли исполнителя через текстовое сообщение"""
         message_text = update.message.text
-        print(f"🔍 DEBUG: Role selection text called with message='{message_text}'")
 
         # Сопоставление текста кнопок с ролями
         role_mapping = {
@@ -70,10 +69,8 @@ class AdminTaskHandlers:
 
         role = role_mapping.get(message_text)
         if not role:
-            print(f"❌ DEBUG: Invalid role text '{message_text}'")
             return
 
-        print(f"✅ DEBUG: Valid role '{role}' selected from text '{message_text}'")
 
         # Продолжаем с той же логикой, что и в callback версии
         await self._process_role_selection(update, context, role, is_callback=False)
@@ -82,16 +79,13 @@ class AdminTaskHandlers:
         """Обработка выбора роли исполнителя через callback query"""
         # Извлекаем роль из callback data
         role = query.data.replace("select_role_", "")
-        print(f"🔍 DEBUG: Role selection called with role='{role}', callback_data='{query.data}'")
 
         # Проверяем корректность роли
         valid_roles = ['admin', 'designer', 'smm_manager', 'digital']
         if role not in valid_roles:
-            print(f"❌ DEBUG: Invalid role '{role}', valid roles: {valid_roles}")
             await query.answer("❌ Неверная роль")
             return
 
-        print(f"✅ DEBUG: Valid role '{role}' selected")
 
         # Продолжаем с той же логикой
         await self._process_role_selection(query, context, role, is_callback=True)
@@ -99,40 +93,39 @@ class AdminTaskHandlers:
     async def handle_executor_selection_text(self, update, context):
         """Обработка выбора исполнителя через текстовое сообщение"""
         message_text = update.message.text
-        print(f"🔍 DEBUG: Executor selection text called with message='{message_text}'")
 
         # Извлекаем имя исполнителя из текста кнопки
         if not message_text.startswith("👤 "):
-            print(f"❌ DEBUG: Invalid executor text format '{message_text}'")
             return
 
         executor_name = message_text[2:].strip()  # Убираем "👤 " в начале
-        print(f"✅ DEBUG: Looking for executor with name '{executor_name}'")
 
         # Получаем данные задачи
         task_data = context.user_data.get('admin_task_creation', {})
         role = task_data.get('executor_role')
 
         if not role:
-            print(f"❌ DEBUG: No role found in task_data")
             return
 
-        # Получаем всех пользователей этой роли
-        users = await self.get_users_by_role(role)
+        # Получаем всех пользователей этой роли из кеша или запрашиваем заново
+        users = task_data.get('_cached_users')
+        if not users:
+            users = await self.get_users_by_role(role)
 
-        # Ищем пользователя по имени
+        # Ищем пользователя по имени (точное совпадение)
         executor = None
         for user in users:
-            if user['name'] == executor_name:
+            if user['name'].strip() == executor_name.strip():
                 executor = user
                 break
 
         if not executor:
-            print(f"❌ DEBUG: Executor '{executor_name}' not found")
-            await update.message.reply_text("❌ Исполнитель не найден")
+            await update.message.reply_text(
+                f"❌ Исполнитель не найден\n\n"
+                f"Попробуйте выбрать из предложенных кнопок."
+            )
             return
 
-        print(f"✅ DEBUG: Found executor: {executor}")
 
         # Обновляем данные создания задачи
         task_data['executor_id'] = executor['id']
@@ -149,7 +142,7 @@ class AdminTaskHandlers:
         task_data['step'] = 'project_selection'
         context.user_data['admin_task_creation'] = task_data
 
-        # Получаем все проекты
+        # Получаем все проекты и кешируем
         projects = await self.get_all_projects()
 
         if not projects:
@@ -160,9 +153,13 @@ class AdminTaskHandlers:
             )
             return
 
+        # Сохраняем проекты в кеш для избежания повторных запросов
+        task_data['_cached_projects'] = projects
+        context.user_data['admin_task_creation'] = task_data
+
         # Создаем обычные кнопки клавиатуры с проектами (по 2 в ряд)
         keyboard = []
-        project_buttons = [f"📁 {project['name']}" for project in projects]
+        project_buttons = [f"📁 {project['name'].strip()}" for project in projects]
         for i in range(0, len(project_buttons), 2):
             row = project_buttons[i:i+2]
             keyboard.append(row)
@@ -181,32 +178,40 @@ class AdminTaskHandlers:
     async def handle_project_selection_text(self, update, context):
         """Обработка выбора проекта через текстовое сообщение"""
         message_text = update.message.text
-        print(f"🔍 DEBUG: Project selection text called with message='{message_text}'")
+        logger.debug(f"Project selection text: '{message_text}'")
 
         # Извлекаем название проекта из текста кнопки
         if not message_text.startswith("📁 "):
-            print(f"❌ DEBUG: Invalid project text format '{message_text}'")
+            logger.warning(f"Invalid project text format: '{message_text}'")
             return
 
         project_name = message_text[2:].strip()  # Убираем "📁 " в начале
-        print(f"✅ DEBUG: Looking for project with name '{project_name}'")
 
-        # Получаем все проекты
-        projects = await self.get_all_projects()
+        # Валидация пустого имени проекта
+        if not project_name:
+            logger.warning("Empty project name after emoji removal")
+            await update.message.reply_text("❌ Некорректное имя проекта")
+            return
 
-        # Ищем проект по имени
-        project = None
-        for proj in projects:
-            if proj['name'] == project_name:
-                project = proj
-                break
+        # Используем кешированные проекты если есть
+        task_data = context.user_data.get('admin_task_creation', {})
+        projects = task_data.get('_cached_projects')
+
+        if not projects:
+            # Если кеша нет, запрашиваем и сохраняем
+            projects = await self.get_all_projects()
+            task_data['_cached_projects'] = projects
+
+        # Оптимизированный поиск через словарь O(1) вместо O(n)
+        projects_map = {p['name'].strip(): p for p in projects}
+        project = projects_map.get(project_name.strip())
 
         if not project:
-            print(f"❌ DEBUG: Project '{project_name}' not found")
+            logger.warning(f"Project '{project_name}' not found in {list(projects_map.keys())}")
             await update.message.reply_text("❌ Проект не найден")
             return
 
-        print(f"✅ DEBUG: Found project: {project}")
+        logger.info(f"Found project: {project['name']} (id={project['id']})")
 
         # Обновляем данные создания задачи
         task_data = context.user_data.get('admin_task_creation', {})
@@ -246,7 +251,6 @@ class AdminTaskHandlers:
     async def handle_task_type_selection_text(self, update, context):
         """Обработка выбора типа задачи через текстовое сообщение"""
         message_text = update.message.text
-        print(f"🔍 DEBUG: Task type selection text called with message='{message_text}'")
 
         task_data = context.user_data.get('admin_task_creation', {})
         executor_role = task_data.get('executor_role')
@@ -255,10 +259,8 @@ class AdminTaskHandlers:
         available_task_types = await self.get_task_types_by_role(executor_role)
 
         if message_text not in available_task_types:
-            print(f"❌ DEBUG: Invalid task type text '{message_text}', available: {available_task_types}")
             return
 
-        print(f"✅ DEBUG: Valid task type '{message_text}' selected from available types")
 
         # Обновляем данные создания задачи
         task_data['task_type'] = message_text  # Сохраняем полное название как было выбрано
@@ -305,7 +307,6 @@ class AdminTaskHandlers:
                 # Fallback к статическим форматам
                 formats = ["📱 9:16", "⬜ 1:1", "📐 4:5", "📺 16:9", "🔄 Другое"]
         except Exception as e:
-            print(f"❌ ERROR: Failed to get formats from API: {e}")
             # Fallback к статическим форматам
             formats = ["📱 9:16", "⬜ 1:1", "📐 4:5", "📺 16:9", "🔄 Другое"]
 
@@ -331,7 +332,6 @@ class AdminTaskHandlers:
     async def handle_format_selection_text(self, update, context):
         """Обработка выбора формата через текстовое сообщение"""
         message_text = update.message.text
-        print(f"🔍 DEBUG: Format selection text called with message='{message_text}'")
 
         # Получаем доступные форматы из API
         try:
@@ -341,14 +341,11 @@ class AdminTaskHandlers:
             else:
                 available_formats = ["📱 9:16", "⬜ 1:1", "📐 4:5", "📺 16:9", "🔄 Другое"]
         except Exception as e:
-            print(f"❌ ERROR: Failed to get formats from API: {e}")
             available_formats = ["📱 9:16", "⬜ 1:1", "📐 4:5", "📺 16:9", "🔄 Другое"]
 
         if message_text not in available_formats:
-            print(f"❌ DEBUG: Invalid format text '{message_text}', available: {available_formats}")
             return
 
-        print(f"✅ DEBUG: Valid format '{message_text}' selected")
 
         # Обновляем данные создания задачи
         task_data = context.user_data.get('admin_task_creation', {})
@@ -400,7 +397,7 @@ class AdminTaskHandlers:
             reply_markup=reply_markup
         )
 
-    async def _process_role_selection(self, update_or_query, context, role, is_callback=True):
+    async def _process_role_selection(self, update_or_query, context, role, is_callback=True, page=0):
         """Общая логика обработки выбора роли"""
 
         # Обновляем данные создания задачи
@@ -411,12 +408,8 @@ class AdminTaskHandlers:
 
         # Получаем пользователей этой роли
         users = await self.get_users_by_role(role)
-        print(f"👥 DEBUG: Found {len(users)} users for role '{role}'")
-        for user in users:
-            print(f"   - {user}")
 
         if not users:
-            print(f"❌ DEBUG: No users found for role '{role}'")
             message_text = (
                 f"❌ **Нет доступных исполнителей с ролью:** {self.get_role_name(role)}\n\n"
                 "Попробуйте выбрать другую роль."
@@ -437,14 +430,26 @@ class AdminTaskHandlers:
                 )
             return
 
-        # Создаем обычные кнопки клавиатуры с исполнителями (по 3 в ряд)
+        # Кешируем всех пользователей
+        task_data['_cached_users'] = users
+        context.user_data['admin_task_creation'] = task_data
+
+        # Создаем обычные кнопки клавиатуры (по 3 в ряд)
         keyboard = []
-        user_buttons = [f"👤 {user['name']}" for user in users]
-        for i in range(0, len(user_buttons), 3):
-            row = user_buttons[i:i+3]
+        row = []
+        for user in users:
+            row.append(f"👤 {user['name']}")
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+
+        # Добавляем оставшиеся кнопки
+        if row:
             keyboard.append(row)
 
+        # Добавляем кнопку "Назад"
         keyboard.append(["🔙 Назад"])
+
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
         role_name = self.get_role_name(role)
@@ -455,7 +460,8 @@ class AdminTaskHandlers:
         )
 
         if is_callback:
-            await update_or_query.edit_message_text(
+            # Для callback query отправляем новое сообщение с клавиатурой
+            await update_or_query.message.reply_text(
                 message_text,
                 parse_mode='Markdown',
                 reply_markup=reply_markup
@@ -466,6 +472,23 @@ class AdminTaskHandlers:
                 parse_mode='Markdown',
                 reply_markup=reply_markup
             )
+
+    async def handle_executor_page(self, query, context):
+        """Обработка переключения страниц исполнителей"""
+        # Формат: executor_page_{role}_{page}
+        parts = query.data.replace("executor_page_", "").split("_")
+        if len(parts) < 2:
+            await query.answer("❌ Ошибка формата данных")
+            return
+
+        role = parts[0]
+        try:
+            page = int(parts[1])
+        except ValueError:
+            await query.answer("❌ Неверный номер страницы")
+            return
+
+        await self._process_role_selection(query, context, role, is_callback=True, page=page)
 
     async def handle_executor_selection(self, query, context):
         """Обработка выбора исполнителя через callback query"""
@@ -490,10 +513,12 @@ class AdminTaskHandlers:
         task_data['executor_id'] = executor['id']
         task_data['executor_name'] = executor['name']
         task_data['step'] = 'project_selection'
-        context.user_data['admin_task_creation'] = task_data
 
-        # Получаем все проекты
+        # Получаем все проекты и кешируем в context
         projects = await self.get_all_projects()
+        task_data['_cached_projects'] = projects  # Кеш для избежания повторных запросов
+
+        context.user_data['admin_task_creation'] = task_data
 
         if not projects:
             await query.edit_message_text(
@@ -506,20 +531,86 @@ class AdminTaskHandlers:
             )
             return
 
-        # Создаем inline кнопки с проектами
+        # Создаем inline кнопки с пагинацией (10 на страницу)
+        PAGE_SIZE = 10
+        total_pages = (len(projects) - 1) // PAGE_SIZE + 1
+        page = 0  # Первая страница
+        start_idx = page * PAGE_SIZE
+        end_idx = min(start_idx + PAGE_SIZE, len(projects))
+
         keyboard = []
-        for project in projects:
+        for project in projects[start_idx:end_idx]:
             keyboard.append([InlineKeyboardButton(
                 f"📁 {project['name']}",
                 callback_data=f"select_project_{project['id']}"
             )])
 
+        # Добавляем кнопки навигации если нужно
+        nav_buttons = []
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"project_page_{page+1}"))
+
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"select_role_{task_data.get('executor_role')}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
+        page_info = f" (стр. {page+1}/{total_pages})" if total_pages > 1 else ""
         await query.edit_message_text(
             f"➕ **Создание новой задачи**\n\n"
-            f"👤 **Исполнитель:** {executor['name']}\n\n"
+            f"👤 **Исполнитель:** {executor['name']}{page_info}\n\n"
+            f"📁 **Выберите проект:**",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+    async def handle_project_page(self, query, context):
+        """Обработка переключения страниц проектов"""
+        # Формат: project_page_{page}
+        try:
+            page = int(query.data.replace("project_page_", ""))
+        except ValueError:
+            await query.answer("❌ Неверный номер страницы")
+            return
+
+        task_data = context.user_data.get('admin_task_creation', {})
+        projects = task_data.get('_cached_projects', [])
+
+        if not projects:
+            projects = await self.get_all_projects()
+            task_data['_cached_projects'] = projects
+
+        # Создаем inline кнопки с пагинацией (10 на страницу)
+        PAGE_SIZE = 10
+        total_pages = (len(projects) - 1) // PAGE_SIZE + 1
+        start_idx = page * PAGE_SIZE
+        end_idx = min(start_idx + PAGE_SIZE, len(projects))
+
+        keyboard = []
+        for project in projects[start_idx:end_idx]:
+            keyboard.append([InlineKeyboardButton(
+                f"📁 {project['name']}",
+                callback_data=f"select_project_{project['id']}"
+            )])
+
+        # Добавляем кнопки навигации
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"project_page_{page-1}"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"project_page_{page+1}"))
+
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+
+        keyboard.append([InlineKeyboardButton("🔙 К исполнителям", callback_data=f"select_role_{task_data.get('executor_role')}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        page_info = f" (стр. {page+1}/{total_pages})" if total_pages > 1 else ""
+        await query.edit_message_text(
+            f"➕ **Создание новой задачи**\n\n"
+            f"👤 **Исполнитель:** {task_data.get('executor_name', 'Не выбран')}{page_info}\n\n"
             f"📁 **Выберите проект:**",
             parse_mode='Markdown',
             reply_markup=reply_markup
@@ -530,8 +621,15 @@ class AdminTaskHandlers:
         # Извлекаем ID проекта из callback data
         project_id = int(query.data.replace("select_project_", ""))
 
+        task_data = context.user_data.get('admin_task_creation', {})
+
+        # Используем кешированные проекты вместо повторного запроса
+        projects = task_data.get('_cached_projects', [])
+        if not projects:
+            # Если кеш пустой, запрашиваем заново
+            projects = await self.get_all_projects()
+
         # Находим проект по ID
-        projects = await self.get_all_projects()
         project = None
         for proj in projects:
             if proj['id'] == project_id:
@@ -543,7 +641,6 @@ class AdminTaskHandlers:
             return
 
         # Обновляем данные создания задачи
-        task_data = context.user_data.get('admin_task_creation', {})
         task_data['project_id'] = project['id']
         task_data['project_name'] = project['name']
         task_data['step'] = 'task_type_selection'
@@ -942,7 +1039,27 @@ class AdminTaskHandlers:
 
             task_id = cursor.lastrowid
             conn.commit()
+
+            # Получаем telegram_id исполнителя для отправки уведомления
+            executor = conn.execute(
+                "SELECT telegram_id FROM users WHERE id = ?",
+                (task_data.get('executor_id'),)
+            ).fetchone()
+
             conn.close()
+
+            # Отправляем уведомление исполнителю в фоновом режиме (не блокируя ответ)
+            if executor and executor['telegram_id']:
+                logger.info(f"📨 Отправка уведомления о задаче #{task_id} исполнителю {executor['name']} (telegram_id: {executor['telegram_id']})")
+                asyncio.create_task(
+                    self.send_task_notification(
+                        executor_telegram_id=executor['telegram_id'],
+                        task_id=task_id,
+                        task_data=task_data
+                    )
+                )
+            else:
+                logger.warning(f"⚠️ Уведомление не отправлено: executor={executor}, telegram_id={executor.get('telegram_id') if executor else 'None'}")
 
             # Формируем сообщение об успехе
             success_message = f"""
@@ -963,10 +1080,13 @@ class AdminTaskHandlers:
             success_message += "└─────────────────────────────────┘\n\n"
             success_message += "📲 **Задача отображается в системе и доступна исполнителю.**"
 
+            # Очищаем историю чата
+            await self.bot.clear_chat_history(update, context, limit=50)
+
             # Создаем главное меню
             keyboard = [
                 ["🔧 Управление задачами"],
-                ["💰 Расходы", "📊 Отчеты"]
+                ["💰 Расходы"]
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -1071,29 +1191,33 @@ class AdminTaskHandlers:
         return False
 
     async def get_users_by_role(self, role: str) -> List[Dict]:
-        """Получение пользователей по роли"""
-        print(f"🔍 DEBUG: get_users_by_role called with role='{role}'")
-        try:
-            conn = self.bot.get_db_connection()
-            if not conn:
-                print("❌ DEBUG: Failed to get database connection")
-                return []
+        """Получение пользователей по роли из базы данных"""
+        conn = self.bot.get_db_connection()
+        if not conn:
+            return []
 
-            print(f"✅ DEBUG: Database connection successful")
+        try:
             cursor = conn.execute("""
-                SELECT id, name, telegram_username
+                SELECT id, name, telegram_username, role
                 FROM users
                 WHERE role = ? AND is_active = 1
                 ORDER BY name
             """, (role,))
-            users = [dict(row) for row in cursor.fetchall()]
+
+            users = []
+            for row in cursor.fetchall():
+                users.append({
+                    'id': row[0],
+                    'name': row[1],
+                    'telegram_username': row[2],
+                    'role': row[3]
+                })
+
             conn.close()
-            print(f"👥 DEBUG: Query returned {len(users)} users")
             return users
         except Exception as e:
-            print(f"❌ DEBUG: Exception in get_users_by_role: {e}")
-            logger.error(f"Ошибка получения пользователей: {e}")
-            if 'conn' in locals():
+            logger.error(f"Ошибка получения пользователей по роли {role}: {e}")
+            if conn:
                 conn.close()
             return []
 
@@ -1118,24 +1242,33 @@ class AdminTaskHandlers:
             return None
 
     async def get_all_projects(self) -> List[Dict]:
-        """Получение всех проектов"""
+        """Получение всех проектов из базы данных"""
         conn = self.bot.get_db_connection()
         if not conn:
             return []
 
         try:
             cursor = conn.execute("""
-                SELECT id, name
+                SELECT id, name, start_date
                 FROM projects
                 WHERE is_archived = 0
                 ORDER BY start_date DESC
             """)
-            projects = [dict(row) for row in cursor.fetchall()]
+
+            projects = []
+            for row in cursor.fetchall():
+                projects.append({
+                    'id': row[0],
+                    'name': row[1],
+                    'start_date': row[2] if len(row) > 2 else None
+                })
+
             conn.close()
             return projects
         except Exception as e:
             logger.error(f"Ошибка получения проектов: {e}")
-            conn.close()
+            if conn:
+                conn.close()
             return []
 
     async def get_project_by_id(self, project_id: int) -> Optional[Dict]:
@@ -1170,45 +1303,41 @@ class AdminTaskHandlers:
     async def get_task_types_by_role(self, role: str) -> List[str]:
         """Получение типов задач в зависимости от роли из API"""
         try:
-            # Используем метод bot для получения типов задач из API
+            # Пробуем получить из API
             task_types_data = await self.bot.get_task_types_from_api(role)
-
             if task_types_data:
-                # Возвращаем список названий для кнопок клавиатуры
-                # API возвращает список кортежей: [(display_name, internal_name), ...]
+                logger.info(f"✅ Получены типы задач из API для роли {role}")
                 return [display_name for display_name, internal_name in task_types_data]
             else:
-                # Fallback к статическим типам при ошибке API
+                logger.warning(f"API вернул пустой результат, используем fallback для роли {role}")
                 return self.get_fallback_task_types_by_role(role)
-
         except Exception as e:
-            print(f"❌ ERROR: Failed to get task types from API: {e}")
-            # Fallback к статическим типам при ошибке
+            logger.error(f"Ошибка API запроса типов задач: {e}, используем fallback")
             return self.get_fallback_task_types_by_role(role)
 
     def get_fallback_task_types_by_role(self, role: str) -> List[str]:
-        """Fallback статические типы задач в зависимости от роли"""
+        """Fallback статические типы задач в зависимости от роли (соответствуют API)"""
         task_types = {
             'designer': [
-                "🎬 Motion",
+                "🎞️ Motion",
                 "🖼️ Статика",
-                "📹 Видео",
-                "🎠 Карусель",
-                "🔄 Другое"
+                "🎬 Видео",
+                "🖼️ Карусель",
+                "📌 Другое"
             ],
             'smm_manager': [
-                "📝 Публикация",
-                "📅 Контент план",
+                "[INFO] Публикация",
+                "[INFO] Контент план",
                 "📊 Отчет",
-                "📸 Съемка",
+                "📹 Съемка",
                 "🤝 Встреча",
                 "📈 Стратегия",
-                "📋 Презентация",
-                "⚙️ Админ задачи",
-                "🔍 Анализ",
-                "📑 Брифинг",
-                "📝 Сценарий",
-                "🔄 Другое"
+                "🎤 Презентация",
+                "🗂️ Админ задачи",
+                "🔎 Анализ",
+                "[DB] Брифинг",
+                "📜 Сценарий",
+                "📌 Другое"
             ],
             'admin': [
                 "📝 Публикация",
@@ -1350,7 +1479,6 @@ class AdminTaskHandlers:
 
         # Получаем пользователей этой роли
         users = await self.get_users_by_role_for_active_tasks(role)
-        print(f"DEBUG: Found {len(users)} users for role '{role}'")
 
         if not users:
             await update.message.reply_text(
@@ -1428,11 +1556,11 @@ class AdminTaskHandlers:
                 )
                 return
 
-            # Получаем активные задачи пользователя (только статус "В работе")
+            # Получаем активные задачи пользователя (статусы "new", "in_progress" и "overdue")
             cursor = conn.execute("""
                 SELECT id, title, description, project, task_type, deadline, created_at
                 FROM tasks
-                WHERE executor_id = ? AND status = 'in_progress'
+                WHERE executor_id = ? AND status IN ('new', 'in_progress', 'overdue')
                 ORDER BY created_at DESC
             """, (user['id'],))
 
@@ -1447,7 +1575,7 @@ class AdminTaskHandlers:
                 if current_db_user and current_db_user['role'] == 'admin':
                     keyboard = [
                         ["🔧 Управление задачами"],
-                        ["💰 Расходы", "📊 Отчеты"]
+                        ["💰 Расходы"]
                     ]
                 else:
                     keyboard = [
@@ -1466,22 +1594,6 @@ class AdminTaskHandlers:
                 # Очищаем данные просмотра
                 context.user_data.pop('active_tasks_view', None)
                 return
-
-            # Отправляем сводное сообщение
-            summary_text = (
-                f"📋 **Активные задачи: {user['name']}**\n"
-                f"👥 **Роль:** {self.get_role_display_name(user.get('role', 'unknown'))}\n"
-                f"📊 **Всего активных задач:** {len(tasks)}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            )
-
-            await update.message.reply_text(
-                summary_text,
-                parse_mode='Markdown'
-            )
-
-            # Небольшая задержка перед отправкой задач
-            await asyncio.sleep(0.5)
 
             # Отправляем каждую задачу отдельным сообщением
             for i, task in enumerate(tasks, 1):
@@ -1575,7 +1687,7 @@ class AdminTaskHandlers:
                     if current_db_user and current_db_user['role'] == 'admin':
                         keyboard = [
                             ["🔧 Управление задачами"],
-                            ["💰 Расходы", "📊 Отчеты"]
+                            ["💰 Расходы"]
                         ]
                     else:
                         keyboard = [
@@ -1583,6 +1695,18 @@ class AdminTaskHandlers:
                             ["💰 Расходы"]
                         ]
                     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                    # Отправляем сводное сообщение
+                    summary_text = (
+                        f"📋 **Активные задачи: {user['name']}**\n"
+                        f"👥 **Роль:** {self.get_role_display_name(user.get('role', 'unknown'))}\n"
+                        f"📊 **Всего активных задач:** {len(tasks)}"
+                    )
+
+                    await update.message.reply_text(
+                        summary_text,
+                        parse_mode='Markdown'
+                    )
 
                     # Отправляем информационное сообщение с клавиатурой
                     await update.message.reply_text(
@@ -1652,7 +1776,7 @@ class AdminTaskHandlers:
                 if current_db_user and current_db_user['role'] == 'admin':
                     keyboard = [
                         ["🔧 Управление задачами"],
-                        ["💰 Расходы", "📊 Отчеты"]
+                        ["💰 Расходы"]
                     ]
                 else:
                     keyboard = [
@@ -1793,7 +1917,7 @@ class AdminTaskHandlers:
             if current_db_user and current_db_user['role'] == 'admin':
                 keyboard = [
                     ["🔧 Управление задачами"],
-                    ["💰 Расходы", "📊 Отчеты"]
+                    ["💰 Расходы"]
                 ]
             else:
                 keyboard = [
@@ -1837,7 +1961,6 @@ class AdminTaskHandlers:
 
             users = []
             rows = cursor.fetchall()
-            print(f"DEBUG: Found {len(rows)} users for role '{role_key}'")
             for row in rows:
                 users.append({
                     'id': row[0],
@@ -1845,7 +1968,6 @@ class AdminTaskHandlers:
                     'telegram_username': row[2],
                     'role': row[3]
                 })
-                print(f"DEBUG: User {row[1]} (id: {row[0]})")
 
             return users
 
@@ -1866,55 +1988,405 @@ class AdminTaskHandlers:
         }
         return role_names.get(role, role)
 
+    # ================== МЕТОДЫ ДЛЯ ПРОСМОТРА АРХИВНЫХ ЗАДАЧ ==================
+
+    async def handle_archived_tasks_start(self, update, context):
+        """Начало просмотра архивных задач - выбор роли"""
+        # Инициализируем просмотр архивных задач
+        context.user_data['archived_tasks_view'] = {
+            'step': 'role_selection'
+        }
+
+        # Создаем клавиатуру с основными ролями из приложения
+        keyboard = [
+            ["🔑 Администратор", "📱 СММ-менеджер"],
+            ["🎨 Дизайнер"],
+            ["🔙 Назад"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+        await update.message.reply_text(
+            "📁 **Просмотр архивных задач**\n\n"
+            "👥 Выберите роль для просмотра завершенных задач:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+    async def handle_archived_tasks_role_selection(self, update, context, role_text):
+        """Обработка выбора роли для просмотра архивных задач"""
+        # Маппинг текста на роль
+        role_mapping = {
+            "🔑 Администратор": "admin",
+            "📱 СММ-менеджер": "smm_manager",
+            "🎨 Дизайнер": "designer"
+        }
+
+        role = role_mapping.get(role_text)
+        if not role:
+            return
+
+        # Сохраняем выбранную роль
+        archived_data = context.user_data.get('archived_tasks_view', {})
+        archived_data['role'] = role
+        archived_data['step'] = 'user_selection'
+        context.user_data['archived_tasks_view'] = archived_data
+
+        # Получаем пользователей выбранной роли
+        users = await self.get_users_by_role_for_active_tasks(role)
+
+        if not users:
+            await update.message.reply_text(
+                f"❌ Нет пользователей с ролью {role_text}",
+                parse_mode='Markdown'
+            )
+            return
+
+        # Создаем кнопки с пользователями (по 2 в ряд)
+        keyboard = []
+        user_buttons = [f"👤 {user['name']}" for user in users]
+        for i in range(0, len(user_buttons), 2):
+            row = user_buttons[i:i+2]
+            keyboard.append(row)
+
+        keyboard.append(["🔙 Назад к выбору роли"])
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+        await update.message.reply_text(
+            f"Выберите сотрудника для просмотра завершенных задач:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+    async def handle_archived_tasks_user_selection(self, update, context, user_text):
+        """Обработка выбора пользователя для просмотра архивных задач"""
+        # Убираем эмодзи из текста
+        user_name = user_text.replace("👤 ", "").strip()
+
+        # Получаем роль из данных контекста
+        archived_data = context.user_data.get('archived_tasks_view', {})
+        selected_role = archived_data.get('role')
+
+        if not selected_role:
+            await update.message.reply_text("❌ Ошибка: роль не выбрана")
+            return
+
+        # Получаем пользователей этой роли
+        users = await self.get_users_by_role_for_active_tasks(selected_role)
+
+        # Ищем пользователя по имени
+        user = None
+        for u in users:
+            if u['name'] == user_name:
+                user = u
+                break
+
+        if not user:
+            await update.message.reply_text(f"❌ Пользователь {user_name} не найден")
+            return
+
+        # Сохраняем выбранного пользователя и переходим к выбору периода
+        archived_data['user_id'] = user['id']
+        archived_data['user_name'] = user['name']
+        archived_data['step'] = 'period_selection'
+        context.user_data['archived_tasks_view'] = archived_data
+
+        # Создаем кнопки выбора периода
+        keyboard = [
+            ["📅 За сегодня", "📅 За неделю"],
+            ["📅 За месяц", "📅 За все время"],
+            ["🔙 Назад"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+        await update.message.reply_text(
+            f"👤 **Сотрудник:** {user['name']}\n\n"
+            f"📅 **Выберите период для просмотра завершенных задач:**",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+    async def handle_archived_tasks_period_selection(self, update, context, period_text):
+        """Обработка выбора периода для просмотра архивных задач"""
+
+        archived_data = context.user_data.get('archived_tasks_view', {})
+        user_id = archived_data.get('user_id')
+        user_name = archived_data.get('user_name')
+
+        if not user_id:
+            await update.message.reply_text("❌ Ошибка: пользователь не выбран")
+            return
+
+        # Создаем объект пользователя
+        user = {
+            'id': user_id,
+            'name': user_name,
+            'role': archived_data.get('role')
+        }
+
+        # Сохраняем период
+        archived_data['period'] = period_text
+        context.user_data['archived_tasks_view'] = archived_data
+
+        # Показываем завершенные задачи пользователя с учетом периода
+        await self.show_user_archived_tasks(update, context, user, period_text)
+
+    async def show_user_archived_tasks(self, update, context, user, period_text):
+        """Показать завершенные задачи пользователя за выбранный период"""
+        try:
+            conn = self.bot.get_db_connection()
+            if not conn:
+                await update.message.reply_text("❌ Ошибка подключения к базе данных")
+                return
+
+            # Вычисляем дату начала периода
+            from datetime import datetime, timedelta
+            now = datetime.now()
+
+            if period_text == "📅 За сегодня":
+                start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                period_label = "сегодня"
+            elif period_text == "📅 За неделю":
+                start_date = now - timedelta(days=7)
+                period_label = "за последнюю неделю"
+            elif period_text == "📅 За месяц":
+                start_date = now - timedelta(days=30)
+                period_label = "за последний месяц"
+            else:  # За все время
+                start_date = None
+                period_label = "за все время"
+
+            # Получаем завершенные задачи пользователя (только статус "done")
+            if start_date:
+                cursor = conn.execute("""
+                    SELECT id, title, description, project, task_type, deadline, created_at, finished_at
+                    FROM tasks
+                    WHERE executor_id = ? AND status = 'done' AND finished_at >= ?
+                    ORDER BY finished_at DESC
+                    LIMIT 50
+                """, (user['id'], start_date.isoformat()))
+            else:
+                cursor = conn.execute("""
+                    SELECT id, title, description, project, task_type, deadline, created_at, finished_at
+                    FROM tasks
+                    WHERE executor_id = ? AND status = 'done'
+                    ORDER BY finished_at DESC
+                    LIMIT 50
+                """, (user['id'],))
+
+            tasks = cursor.fetchall()
+
+            if not tasks:
+                # Получаем роль текущего пользователя для определения кнопок
+                current_user = update.effective_user
+                current_db_user = self.bot.get_user_by_telegram_id(current_user.id, current_user.username)
+
+                # Создаем кнопки главного меню в зависимости от роли
+                if current_db_user and current_db_user['role'] == 'admin':
+                    keyboard = [
+                        ["🔧 Управление задачами"],
+                        ["💰 Расходы"]
+                    ]
+                else:
+                    keyboard = [
+                        ["🔧 Управление задачами"],
+                        ["💰 Расходы"]
+                    ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                await update.message.reply_text(
+                    f"📭 **{user['name']}** не имеет завершенных задач\n\n"
+                    f"🏠 Выберите следующее действие:",
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+                # Очищаем данные просмотра
+                context.user_data.pop('archived_tasks_view', None)
+                return
+
+            # Отправляем каждую задачу отдельным сообщением
+            for i, task in enumerate(tasks, 1):
+                task_info = []
+
+                # Заголовок задачи с номером
+                task_info.append(f"📝 **Задача #{i}**")
+                task_info.append(f"**{task[1]}**")  # title
+                task_info.append("─────────────────────")
+
+                # Проект
+                if task[3]:  # project
+                    task_info.append(f"🎯 **Проект:** {task[3]}")
+
+                # Тип задачи
+                if task[4]:  # task_type
+                    task_info.append(f"📂 **Тип:** {self.get_task_type_for_webapp(task[4])}")
+
+                # Дедлайн
+                if task[5]:  # deadline
+                    try:
+                        from datetime import datetime
+                        deadline_dt = datetime.fromisoformat(task[5].replace('Z', '+00:00'))
+                        deadline_str = deadline_dt.strftime("%d.%m.%Y в %H:%M")
+                        task_info.append(f"⏰ **Дедлайн:** {deadline_str}")
+                    except:
+                        task_info.append(f"⏰ **Дедлайн:** {task[5]}")
+
+                # Статус завершено
+                task_info.append("✅ **Статус:** Завершено")
+
+                # Дата завершения
+                if task[7]:  # finished_at
+                    try:
+                        from datetime import datetime
+                        finished_dt = datetime.fromisoformat(task[7].replace('Z', '+00:00'))
+                        finished_str = finished_dt.strftime("%d.%m.%Y в %H:%M")
+                        task_info.append(f"🏁 **Завершено:** {finished_str}")
+                    except:
+                        pass
+
+                # Описание
+                if task[2]:  # description
+                    desc = task[2]
+                    if len(desc) > 200:
+                        desc = desc[:200] + "..."
+                    task_info.append(f"📄 **Описание:**\n{desc}")
+
+                # Дата создания
+                if task[6]:  # created_at
+                    try:
+                        from datetime import datetime
+                        created_dt = datetime.fromisoformat(task[6].replace('Z', '+00:00'))
+                        created_str = created_dt.strftime("%d.%m.%Y")
+                        task_info.append(f"📅 **Создано:** {created_str}")
+                    except:
+                        pass
+
+                task_message = "\n".join(task_info)
+
+                # Проверяем, последняя ли это задача
+                is_last_task = (i == len(tasks))
+
+                if is_last_task:
+                    # Для последней задачи добавляем сообщение с клавиатурой
+                    # Убираем Markdown чтобы избежать ошибок парсинга
+                    await update.message.reply_text(
+                        task_message
+                    )
+
+                    # Получаем роль текущего пользователя для определения кнопок
+                    current_user = update.effective_user
+                    current_db_user = self.bot.get_user_by_telegram_id(current_user.id, current_user.username)
+
+                    # Создаем кнопки главного меню в зависимости от роли
+                    if current_db_user and current_db_user['role'] == 'admin':
+                        keyboard = [
+                            ["🔧 Управление задачами"],
+                            ["💰 Расходы"]
+                        ]
+                    else:
+                        keyboard = [
+                            ["🔧 Управление задачами"],
+                            ["💰 Расходы"]
+                        ]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                    # Отправляем сводное сообщение
+                    summary_text = (
+                        f"📁 **Завершенные задачи: {user['name']}**\n"
+                        f"👥 **Роль:** {self.get_role_display_name(user.get('role', 'unknown'))}\n"
+                        f"📅 **Период:** {period_label}\n"
+                        f"📊 **Всего завершенных задач:** {len(tasks)}"
+                    )
+
+                    await update.message.reply_text(
+                        summary_text,
+                        parse_mode='Markdown'
+                    )
+
+                    # Отправляем информационное сообщение с клавиатурой
+                    await update.message.reply_text(
+                        "📌 Выберите действие:",
+                        reply_markup=reply_markup
+                    )
+                else:
+                    # Для остальных задач только сообщение
+                    await update.message.reply_text(
+                        task_message
+                    )
+
+                    # Небольшая задержка между задачами
+                    await asyncio.sleep(0.3)
+
+        except Exception as e:
+            print(f"Ошибка при получении завершенных задач: {e}")
+            await update.message.reply_text(
+                f"❌ Произошла ошибка при загрузке завершенных задач: {str(e)}",
+                parse_mode='Markdown'
+            )
+        finally:
+            if conn:
+                conn.close()
+
     async def handle_admin_message(self, update, context, text):
         """Централизованная обработка администраторских сообщений"""
-        print(f"DEBUG: Admin message handler called with text: '{text}'")
-        print(f"DEBUG: User ID: {update.effective_user.id}, Username: @{update.effective_user.username}")
 
         # Обработка workflow активных задач
         active_tasks_data = context.user_data.get('active_tasks_view')
-        print(f"DEBUG: Active tasks data: {active_tasks_data}")
+        # Обработка workflow архивных задач
+        archived_tasks_data = context.user_data.get('archived_tasks_view')
 
         # Дебаг всех данных пользователя
-        print(f"DEBUG: All user_data keys: {list(context.user_data.keys())}")
 
         # Дополнительная отладка для понимания проблемы
         if text in ["🔑 Администратор", "📱 СММ-менеджер", "🎨 Дизайнер"]:
-            print(f"DEBUG: Role button pressed: '{text}'")
-            print(f"DEBUG: Active tasks data exists: {active_tasks_data is not None}")
-            if active_tasks_data:
-                print(f"DEBUG: Current step: {active_tasks_data.get('step')}")
-                print(f"DEBUG: Step matches role_selection: {active_tasks_data.get('step') == 'role_selection'}")
-            else:
-                print(f"DEBUG: No active_tasks_data found - workflow not started properly")
+            logger.debug(f"Role button pressed: {text}, active={active_tasks_data is not None}, archived={archived_tasks_data is not None}")
 
         # Начало просмотра активных задач
         if text == "📋 Активные задачи":
-            print(f"DEBUG: Starting active tasks workflow")
             await self.handle_active_tasks_start(update, context)
             return True
 
-        # Обработка выбора роли в активных задачах
-        elif active_tasks_data and active_tasks_data.get('step') == 'role_selection':
-            print(f"DEBUG: Active tasks role selection. Text: '{text}', Step: {active_tasks_data.get('step')}")
-            if text in ["🔑 Администратор", "📱 СММ-менеджер", "🎨 Дизайнер"]:
-                print(f"DEBUG: Role selected: {text}")
-                print(f"DEBUG: About to call handle_active_tasks_role_selection")
+        # Начало просмотра архивных задач
+        elif text == "📁 Архив задач":
+            await self.handle_archived_tasks_start(update, context)
+            return True
+
+        # Начало просмотра непринятых задач
+        elif text == "🆕 Не принятые в работу":
+            await self.handle_new_tasks_start(update, context)
+            return True
+
+        # Обработка выбора роли - сначала проверяем архивные, потом активные
+        if text in ["🔑 Администратор", "📱 СММ-менеджер", "🎨 Дизайнер"]:
+
+            # Проверяем архивные задачи
+            if archived_tasks_data and archived_tasks_data.get('step') == 'role_selection':
                 try:
-                    await self.handle_active_tasks_role_selection(update, context, text)
-                    print(f"DEBUG: handle_active_tasks_role_selection completed successfully")
+                    await self.handle_archived_tasks_role_selection(update, context, text)
                     return True
                 except Exception as e:
-                    print(f"DEBUG: Error in handle_active_tasks_role_selection: {e}")
+                    import traceback
+                    traceback.print_exc()
                     return True
-            elif text == "📋 Все активные задачи":
-                print(f"DEBUG: Showing all active tasks")
+            # Проверяем активные задачи
+            elif active_tasks_data and active_tasks_data.get('step') == 'role_selection':
+                try:
+                    await self.handle_active_tasks_role_selection(update, context, text)
+                    return True
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    return True
+            else:
+                logger.debug("No matching workflow for role button")
+
+        # Обработка специальных кнопок активных задач
+        if active_tasks_data and active_tasks_data.get('step') == 'role_selection':
+            if text == "📋 Все активные задачи":
                 await self.show_all_active_tasks(update, context)
                 return True
 
         # Обработка выбора исполнителя в активных задачах
         elif active_tasks_data and active_tasks_data.get('step') == 'user_selection':
-            print(f"DEBUG: User selection step, text: '{text}'")
             if text == "🔙 Назад к выбору роли":
                 # Возвращаемся к выбору роли
                 await self.handle_active_tasks_start(update, context)
@@ -1930,10 +2402,249 @@ class AdminTaskHandlers:
                         await self.handle_active_tasks_user_selection(update, context, text)
                         return True
 
+        # Обработка выбора исполнителя в архивных задачах
+        elif archived_tasks_data and archived_tasks_data.get('step') == 'user_selection':
+            if text == "🔙 Назад к выбору роли":
+                # Возвращаемся к выбору роли
+                await self.handle_archived_tasks_start(update, context)
+                return True
+
+            selected_role = archived_tasks_data.get('role')
+            if selected_role:
+                users = await self.get_users_by_role_for_active_tasks(selected_role)
+                for user in users:
+                    # Сравниваем с форматом кнопки
+                    button_text = f"👤 {user['name']}"
+                    if button_text == text:
+                        await self.handle_archived_tasks_user_selection(update, context, text)
+                        return True
+
+        # Обработка выбора периода в архивных задачах
+        elif archived_tasks_data and archived_tasks_data.get('step') == 'period_selection':
+            if text == "🔙 Назад":
+                # Возвращаемся к выбору пользователя
+                selected_role = archived_tasks_data.get('role')
+                if selected_role:
+                    role_text_mapping = {
+                        "admin": "🔑 Администратор",
+                        "smm_manager": "📱 СММ-менеджер",
+                        "designer": "🎨 Дизайнер"
+                    }
+                    role_text = role_text_mapping.get(selected_role, "")
+                    if role_text:
+                        await self.handle_archived_tasks_role_selection(update, context, role_text)
+                return True
+
+            if text in ["📅 За сегодня", "📅 За неделю", "📅 За месяц", "📅 За все время"]:
+                await self.handle_archived_tasks_period_selection(update, context, text)
+                return True
+
         # Обработка общих кнопок "Назад"
-        elif text == "🔙 Назад" and active_tasks_data:
-            # Возвращаемся к началу просмотра активных задач
-            await self.handle_active_tasks_start(update, context)
+        elif text == "🔙 Назад" and (active_tasks_data or archived_tasks_data):
+            # Возвращаемся к началу просмотра задач
+            if active_tasks_data:
+                await self.handle_active_tasks_start(update, context)
+            elif archived_tasks_data:
+                await self.handle_archived_tasks_start(update, context)
             return True
 
         return False  # Сообщение не обработано
+
+    async def send_task_notification(self, executor_telegram_id: int, task_id: int, task_data: dict):
+        """Отправка уведомления исполнителю о новой задаче"""
+        logger.info(f"🔔 send_task_notification вызвана: task_id={task_id}, executor_telegram_id={executor_telegram_id}")
+        try:
+            # Формируем сообщение о новой задаче
+            notification_text = f"""
+🔔 **Вам назначена новая задача!**
+
+📋 **Задача #{task_id}**
+┌─────────────────────────────────┐
+│ 📝 **Название:** {task_data.get('title')}
+│ 📁 **Проект:** {task_data.get('project_name', 'Не указан')}
+│ 🏷️ **Тип:** {self.get_task_type_name(task_data.get('task_type', ''))}
+"""
+
+            if task_data.get('format'):
+                notification_text += f"│ 📐 **Формат:** {task_data.get('format')}\n"
+
+            notification_text += f"│ ⏰ **Дедлайн:** {task_data.get('deadline_text', 'Не установлен')}\n"
+            notification_text += "└─────────────────────────────────┘\n\n"
+            notification_text += "💡 **Нажмите кнопку ниже, чтобы принять задачу в работу**"
+
+            # Создаем inline кнопку "Принять в работу"
+            inline_keyboard = [
+                [InlineKeyboardButton("✅ Принять в работу", callback_data=f"accept_task_{task_id}")]
+            ]
+            inline_markup = InlineKeyboardMarkup(inline_keyboard)
+
+            # Отправляем уведомление исполнителю в личные сообщения
+            if self.bot.app:
+                try:
+                    await self.bot.app.bot.send_message(
+                        chat_id=executor_telegram_id,
+                        text=notification_text,
+                        parse_mode='Markdown',
+                        reply_markup=inline_markup
+                    )
+                    logger.info(f"✅ Уведомление о задаче #{task_id} отправлено в личные сообщения пользователю {executor_telegram_id}")
+                except Exception as send_error:
+                    error_msg = str(send_error)
+                    if "bot was blocked by the user" in error_msg or "user is deactivated" in error_msg:
+                        logger.warning(f"⚠️ Не удалось отправить уведомление пользователю {executor_telegram_id}: пользователь заблокировал бота")
+                    elif "chat not found" in error_msg:
+                        logger.warning(f"⚠️ Не удалось отправить уведомление пользователю {executor_telegram_id}: пользователь не начал разговор с ботом (/start)")
+                    else:
+                        logger.error(f"❌ Ошибка отправки уведомления пользователю {executor_telegram_id}: {send_error}")
+            else:
+                logger.error("Bot application is not initialized")
+
+        except Exception as e:
+            logger.error(f"Ошибка при формировании уведомления о задаче: {e}")
+
+    async def handle_new_tasks_start(self, update, context):
+        """Просмотр непринятых задач (статус 'new')"""
+        # Получаем текущего пользователя
+        user = update.effective_user
+        db_user = self.bot.get_user_by_telegram_id(user.id, user.username)
+
+        if not db_user:
+            await update.message.reply_text("❌ Пользователь не найден")
+            return
+
+        conn = self.bot.get_db_connection()
+        if not conn:
+            await update.message.reply_text("❌ Ошибка подключения к базе данных")
+            return
+
+        try:
+            # Показываем только задачи, назначенные на текущего пользователя
+            cursor = conn.execute("""
+                SELECT t.id, t.title, t.description, t.project, t.task_type, t.deadline,
+                       t.created_at, u.name as executor_name, u.id as executor_id
+                FROM tasks t
+                LEFT JOIN users u ON t.executor_id = u.id
+                WHERE t.status = 'new' AND t.executor_id = ?
+                ORDER BY t.created_at DESC
+            """, (db_user['id'],))
+            tasks = cursor.fetchall()
+            conn.close()
+
+            if not tasks:
+                # Получаем роль текущего пользователя для определения кнопок
+                keyboard = [
+                    ["🔧 Управление задачами"],
+                    ["💰 Расходы"],
+                    ["🏠 Главное меню", "🗑️ Очистить историю сообщений"]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                await update.message.reply_text(
+                    "🎉 **Нет непринятых задач!**\n\n"
+                    "Все задачи приняты в работу.",
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+                return
+
+            # Отправляем каждую задачу отдельным сообщением с inline кнопкой
+            for i, task in enumerate(tasks, 1):
+                task_id, title, description, project, task_type, deadline, created_at, executor_name, executor_id = task
+
+                # Формируем информацию о задаче
+                task_info = []
+                task_info.append(f"🆕 **Задача #{task_id}**")
+                task_info.append(f"📝 **Название:** {title}")
+
+                if executor_name:
+                    task_info.append(f"👤 **Исполнитель:** {executor_name}")
+
+                if project:
+                    task_info.append(f"📁 **Проект:** {project}")
+
+                if task_type:
+                    task_info.append(f"🏷️ **Тип:** {task_type}")
+
+                # Форматируем дедлайн
+                if deadline:
+                    from datetime import datetime
+                    try:
+                        dl = datetime.fromisoformat(deadline)
+                        deadline_str = dl.strftime("%d.%m.%Y в %H:%M")
+                        task_info.append(f"⏰ **Дедлайн:** {deadline_str}")
+
+                        # Показываем статус всегда "Новая"
+                        task_info.append("🔵 **Статус:** Новая")
+                    except:
+                        task_info.append(f"⏰ **Дедлайн:** {deadline}")
+
+                # Описание
+                if description:
+                    desc = description
+                    if len(desc) > 200:
+                        desc = desc[:200] + "..."
+                    task_info.append(f"📄 **Описание:**\n{desc}")
+
+                # Дата создания
+                if created_at:
+                    try:
+                        from datetime import datetime
+                        created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        created_str = created_dt.strftime("%d.%m.%Y")
+                        task_info.append(f"📅 **Создано:** {created_str}")
+                    except:
+                        pass
+
+                task_message = "\n".join(task_info)
+
+                # Проверяем, последняя ли это задача
+                is_last_task = (i == len(tasks))
+
+                # Создаем inline кнопку "Принять в работу"
+                inline_keyboard = [
+                    [
+                        InlineKeyboardButton("✅ Принять в работу", callback_data=f"accept_task_{task_id}")
+                    ]
+                ]
+                inline_markup = InlineKeyboardMarkup(inline_keyboard)
+
+                # Отправляем задачу с inline кнопкой
+                await update.message.reply_text(
+                    task_message,
+                    parse_mode='Markdown',
+                    reply_markup=inline_markup
+                )
+
+                # Если это последняя задача, добавляем клавиатуру главного меню
+                if is_last_task:
+                    # Клавиатура с кнопками
+                    keyboard = [
+                        ["🔧 Управление задачами"],
+                        ["💰 Расходы"],
+                        ["🏠 Главное меню", "🗑️ Очистить историю сообщений"]
+                    ]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                    # Отправляем сводное сообщение
+                    summary_text = f"📊 **Всего непринятых задач:** {len(tasks)}"
+
+                    await update.message.reply_text(
+                        summary_text,
+                        parse_mode='Markdown'
+                    )
+
+                    # Отправляем информационное сообщение с клавиатурой
+                    await update.message.reply_text(
+                        "📌 Выберите действие:",
+                        reply_markup=reply_markup
+                    )
+                else:
+                    # Небольшая задержка между задачами
+                    await asyncio.sleep(0.3)
+
+        except Exception as e:
+            logger.error(f"Ошибка при получении непринятых задач: {e}")
+            await update.message.reply_text(
+                "❌ Произошла ошибка при получении задач",
+                reply_markup=ReplyKeyboardRemove()
+            )

@@ -195,6 +195,7 @@ The system uses **UTC+5 timezone** throughout:
   - `formatDateUTC5()`: Use only when converting from true UTC timestamps
 - **Critical**: Always use `formatDateAsIs()` for displaying task dates to avoid double-offset issues
 - All datetime comparisons must account for this offset
+- **Model defaults**: When adding `Date` or `DateTime` columns, always use `lambda: get_local_time_utc5().date()` or `get_local_time_utc5` instead of `datetime.utcnow()` to ensure correct timezone handling
 
 ## Database Migrations
 
@@ -204,15 +205,17 @@ The system uses **UTC+5 timezone** throughout:
 2. Backend automatically creates missing tables on startup via `Base.metadata.create_all()`
 3. For column additions to existing tables, add manual `ALTER TABLE` statements in `ensure_expense_tables()` function in `main.py`
 4. Test migrations on development SQLite database first
+5. **Note**: README mentions Alembic commands, but they are not currently implemented - schema changes are done directly via SQLAlchemy
 
 ## Testing
 
 No automated test suite currently exists. Manual testing workflow:
 
-1. Start backend: `uvicorn app.main:app --reload`
-2. Start frontend: `npm run dev`
+1. Start backend: `cd agency_backend && uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`
+2. Start frontend: `cd agency_frontend && npm run dev`
 3. Test via browser at `http://localhost:5173`
 4. API docs available at `http://localhost:8000/docs` (Swagger UI)
+5. **Note**: README mentions pytest and npm test commands, but no test files are currently implemented
 
 ## Common Development Tasks
 
@@ -279,6 +282,9 @@ The project is configured for deployment with Docker Compose + Nginx:
 - **Database relationships**: When fixing orphaned foreign keys (lead_notes, leads manager_id), always check for existing user relationships before operations
 - **Task model fields**: `resume_count` and `overdue_count` must remain uncommented in Task model - they are actively used by CRUD operations
 - **Bot menu consistency**: Main menu layout must be preserved across all handler contexts (after task creation, viewing tasks, etc.)
+- **Default credentials**: Initial admin login is `admin` / `admin123` - change immediately after first login
+- **API documentation**: Interactive Swagger UI available at `http://localhost:8000/docs` when backend is running
+- **Hot reload**: Both frontend (Vite HMR) and backend (uvicorn --reload) support hot reloading during development
 
 ## Communication Language
 

@@ -220,8 +220,8 @@ class ProjectExpense(Base):
     name = Column(String)
     amount = Column(Float)
     description = Column(Text, nullable=True)
-    date = Column(Date, default=datetime.utcnow().date)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    date = Column(Date, default=lambda: get_local_time_utc5().date())
+    created_at = Column(DateTime, default=get_local_time_utc5)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     project = relationship("Project")
@@ -237,8 +237,8 @@ class CommonExpense(Base):
     name = Column(String, nullable=False)
     amount = Column(Float, nullable=False)
     description = Column(Text, nullable=True)
-    date = Column(Date, default=datetime.utcnow().date)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    date = Column(Date, default=lambda: get_local_time_utc5().date())
+    created_at = Column(DateTime, default=get_local_time_utc5)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     category = relationship("ExpenseCategory", back_populates="common_expenses")
@@ -371,8 +371,8 @@ class DigitalProjectExpense(Base):
     project_id = Column(Integer, ForeignKey("digital_projects.id", ondelete="CASCADE"))
     description = Column(String, nullable=False)
     amount = Column(Float, nullable=False)
-    date = Column(Date, default=datetime.utcnow().date)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    date = Column(Date, default=lambda: get_local_time_utc5().date())
+    created_at = Column(DateTime, default=get_local_time_utc5)
 
     project = relationship("DigitalProject", back_populates="expenses")
 
@@ -409,8 +409,8 @@ class EmployeeExpense(Base):
     name = Column(String, nullable=False)
     amount = Column(Float, nullable=False)
     description = Column(Text, nullable=True)
-    date = Column(Date, default=datetime.utcnow().date)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    date = Column(Date, default=lambda: get_local_time_utc5().date())
+    created_at = Column(DateTime, default=get_local_time_utc5)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
 
     user = relationship("User", back_populates="expenses")

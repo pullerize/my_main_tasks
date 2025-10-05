@@ -242,11 +242,11 @@ function Tasks() {
   // Добавляем состояние для активной вкладки
   const [activeTab, setActiveTab] = useState<'regular' | 'recurring'>('regular')
 
-  const [filterRole, setFilterRole] = usePersistedState('filter_tasks_role', '')
-  // Временная замена usePersistedState для отладки
+  // Фильтры для обычных задач
+  const [filterRole, setFilterRole] = usePersistedState('filter_tasks_regular_role', '')
   const [filterUser, setFilterUser] = useState(() => {
     try {
-      const stored = localStorage.getItem('filter_tasks_user')
+      const stored = localStorage.getItem('filter_tasks_regular_user')
       if (stored !== null) {
         const parsed = JSON.parse(stored)
         console.log('Initial filterUser from localStorage:', parsed)
@@ -259,12 +259,29 @@ function Tasks() {
     const userId = Number(localStorage.getItem('userId'))
     return userId ? String(userId) : ''
   })
-  
   const [hasInitialized, setHasInitialized] = useState(false)
-  const [filterDate, setFilterDate] = usePersistedState('filter_tasks_date', 'all')
-  const [customDate, setCustomDate] = usePersistedState('filter_tasks_custom_date', '')
-  const [filterStatus, setFilterStatus] = usePersistedState('filter_tasks_status', 'in_progress')
-  const [filterProject, setFilterProject] = usePersistedState('filter_tasks_project', '')
+  const [filterDate, setFilterDate] = usePersistedState('filter_tasks_regular_date', 'all')
+  const [customDate, setCustomDate] = usePersistedState('filter_tasks_regular_custom_date', '')
+  const [filterStatus, setFilterStatus] = usePersistedState('filter_tasks_regular_status', 'in_progress')
+  const [filterProject, setFilterProject] = usePersistedState('filter_tasks_regular_project', '')
+
+  // Фильтры для повторяющихся задач (шаблонов)
+  const [filterRoleRecurring, setFilterRoleRecurring] = usePersistedState('filter_tasks_recurring_role', '')
+  const [filterUserRecurring, setFilterUserRecurring] = useState(() => {
+    try {
+      const stored = localStorage.getItem('filter_tasks_recurring_user')
+      if (stored !== null) {
+        return JSON.parse(stored)
+      }
+    } catch (e) {
+      console.warn('Error parsing filterUserRecurring from localStorage:', e)
+    }
+    return ''
+  })
+  const [filterDateRecurring, setFilterDateRecurring] = usePersistedState('filter_tasks_recurring_date', 'all')
+  const [customDateRecurring, setCustomDateRecurring] = usePersistedState('filter_tasks_recurring_custom_date', '')
+  const [filterStatusRecurring, setFilterStatusRecurring] = usePersistedState('filter_tasks_recurring_status', '')
+  const [filterProjectRecurring, setFilterProjectRecurring] = usePersistedState('filter_tasks_recurring_project', '')
 
   const role = localStorage.getItem('role') || ''
   const userId = Number(localStorage.getItem('userId'))
@@ -281,15 +298,20 @@ function Tasks() {
   // Сохраняем filterUser в localStorage при изменении
   useEffect(() => {
     console.log('Saving filterUser to localStorage:', filterUser)
-    localStorage.setItem('filter_tasks_user', JSON.stringify(filterUser))
+    localStorage.setItem('filter_tasks_regular_user', JSON.stringify(filterUser))
   }, [filterUser])
+
+  // Сохраняем filterUserRecurring в localStorage при изменении
+  useEffect(() => {
+    localStorage.setItem('filter_tasks_recurring_user', JSON.stringify(filterUserRecurring))
+  }, [filterUserRecurring])
 
   useEffect(() => {
     // Устанавливаем текущего пользователя только при первом заходе, если в localStorage нет сохраненного значения
     if (!hasInitialized && userId) {
-      const stored = localStorage.getItem('filter_tasks_user')
+      const stored = localStorage.getItem('filter_tasks_regular_user')
       console.log('Initialization check:', { stored, filterUser, userId })
-      
+
       // Если в localStorage нет значения, устанавливаем текущего пользователя
       if (stored === null) {
         console.log('No stored filter, setting default user filter to:', String(userId))
@@ -386,6 +408,14 @@ function Tasks() {
     // Пока что используем существующую логику, но можно расширить если в базе есть поле was_recurring
     if (activeTab === 'recurring' && !t.is_recurring) return false
 
+    // Используем разные фильтры в зависимости от активной вкладки
+    const currentFilterStatus = activeTab === 'recurring' ? filterStatusRecurring : filterStatus
+    const currentFilterRole = activeTab === 'recurring' ? filterRoleRecurring : filterRole
+    const currentFilterUser = activeTab === 'recurring' ? filterUserRecurring : filterUser
+    const currentFilterProject = activeTab === 'recurring' ? filterProjectRecurring : filterProject
+    const currentFilterDate = activeTab === 'recurring' ? filterDateRecurring : filterDate
+    const currentCustomDate = activeTab === 'recurring' ? customDateRecurring : customDate
+
     const execRole = users.find((u) => u.id === t.executor_id)?.role
     if (role === 'designer' && execRole !== 'designer') return false
     if (
@@ -394,26 +424,26 @@ function Tasks() {
       execRole !== 'smm_manager'
     )
       return false
-    if (filterStatus !== 'all') {
-      if (filterStatus === 'in_progress' && t.status !== 'in_progress' && t.status !== 'new') return false
-      if (filterStatus === 'overdue' && t.status !== 'overdue') return false
-      if (filterStatus === 'done' && t.status !== 'done') return false
+    if (currentFilterStatus !== 'all') {
+      if (currentFilterStatus === 'in_progress' && t.status !== 'in_progress' && t.status !== 'new') return false
+      if (currentFilterStatus === 'overdue' && t.status !== 'overdue') return false
+      if (currentFilterStatus === 'done' && t.status !== 'done') return false
     }
-    if (filterRole) {
+    if (currentFilterRole) {
       const exec = users.find((u) => u.id === t.executor_id)
-      if (!exec || exec.role !== filterRole) return false
+      if (!exec || exec.role !== currentFilterRole) return false
     }
-    if (filterUser && String(t.executor_id) !== filterUser) return false
-    if (filterProject && t.project !== filterProject) return false
-    if (filterDate !== 'all') {
+    if (currentFilterUser && String(t.executor_id) !== currentFilterUser) return false
+    if (currentFilterProject && t.project !== currentFilterProject) return false
+    if (currentFilterDate !== 'all') {
       const created = new Date(t.created_at)
       const now = new Date()
       const diff = now.getTime() - created.getTime()
-      if (filterDate === 'today' && diff > 86400000) return false
-      if (filterDate === 'week' && diff > 7 * 86400000) return false
-      if (filterDate === 'month' && diff > 30 * 86400000) return false
-      if (filterDate === 'custom' && customDate) {
-        const sel = new Date(customDate)
+      if (currentFilterDate === 'today' && diff > 86400000) return false
+      if (currentFilterDate === 'week' && diff > 7 * 86400000) return false
+      if (currentFilterDate === 'month' && diff > 30 * 86400000) return false
+      if (currentFilterDate === 'custom' && currentCustomDate) {
+        const sel = new Date(currentCustomDate)
         if (
           created.getFullYear() !== sel.getFullYear() ||
           created.getMonth() !== sel.getMonth() ||
@@ -809,7 +839,7 @@ function Tasks() {
             >
               <div className="flex items-center space-x-2">
                 <span className="text-lg">🔄</span>
-                <span>Повторяющиеся задачи</span>
+                <span>Шаблоны повторяющихся задач</span>
                 <span className="inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white bg-green-600 rounded-full">
                   {tasks.filter(t => t.is_recurring).length}
                 </span>
@@ -846,8 +876,8 @@ function Tasks() {
           <div className="flex flex-wrap gap-3">
             <select
               className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-              value={filterProject}
-              onChange={(e) => setFilterProject(e.target.value)}
+              value={activeTab === 'recurring' ? filterProjectRecurring : filterProject}
+              onChange={(e) => activeTab === 'recurring' ? setFilterProjectRecurring(e.target.value) : setFilterProject(e.target.value)}
             >
               <option value="">Все проекты</option>
               {Array.isArray(projects) && projects.map(p => (
@@ -857,8 +887,8 @@ function Tasks() {
             {role !== 'designer' && (
               <select
                 className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                value={filterRole}
-                onChange={(e) => setFilterRole(e.target.value)}
+                value={activeTab === 'recurring' ? filterRoleRecurring : filterRole}
+                onChange={(e) => activeTab === 'recurring' ? setFilterRoleRecurring(e.target.value) : setFilterRole(e.target.value)}
               >
                 <option value="">Все роли</option>
                 <option value="designer">{ROLE_NAMES.designer}</option>
@@ -871,21 +901,25 @@ function Tasks() {
             )}
             <select
               className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-              value={filterUser}
+              value={activeTab === 'recurring' ? filterUserRecurring : filterUser}
               onChange={(e) => {
                 const newValue = e.target.value
-                console.log('onChange: Changing filterUser from', filterUser, 'to', newValue, 'type:', typeof newValue)
-                setFilterUser(newValue)
+                console.log('onChange: Changing filterUser from', activeTab === 'recurring' ? filterUserRecurring : filterUser, 'to', newValue, 'type:', typeof newValue)
+                if (activeTab === 'recurring') {
+                  setFilterUserRecurring(newValue)
+                } else {
+                  setFilterUser(newValue)
+                }
               }}
             >
               <option value="">Все сотрудники</option>
               {Array.isArray(users) && users
                 .filter((u) =>
                   isAdmin(role)
-                    ? filterRole
-                      ? u.role === filterRole
+                    ? (activeTab === 'recurring' ? filterRoleRecurring : filterRole)
+                      ? u.role === (activeTab === 'recurring' ? filterRoleRecurring : filterRole)
                       : true
-                    : !isAdmin(u.role) && (filterRole ? u.role === filterRole : true)
+                    : !isAdmin(u.role) && ((activeTab === 'recurring' ? filterRoleRecurring : filterRole) ? u.role === (activeTab === 'recurring' ? filterRoleRecurring : filterRole) : true)
                 )
                 .map((u) => (
                   <option key={u.id} value={u.id}>
@@ -895,8 +929,8 @@ function Tasks() {
             </select>
             <select
               className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-              value={filterDate}
-              onChange={(e) => setFilterDate(e.target.value)}
+              value={activeTab === 'recurring' ? filterDateRecurring : filterDate}
+              onChange={(e) => activeTab === 'recurring' ? setFilterDateRecurring(e.target.value) : setFilterDate(e.target.value)}
             >
               <option value="all">За все время</option>
               <option value="today">За сегодня</option>
@@ -904,18 +938,18 @@ function Tasks() {
               <option value="month">За месяц</option>
               <option value="custom">Выбрать дату</option>
             </select>
-            {filterDate === 'custom' && (
+            {(activeTab === 'recurring' ? filterDateRecurring : filterDate) === 'custom' && (
               <input
                 type="date"
                 className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                value={customDate}
-                onChange={(e) => setCustomDate(e.target.value)}
+                value={activeTab === 'recurring' ? customDateRecurring : customDate}
+                onChange={(e) => activeTab === 'recurring' ? setCustomDateRecurring(e.target.value) : setCustomDate(e.target.value)}
               />
             )}
             <select
               className="bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
+              value={activeTab === 'recurring' ? filterStatusRecurring : filterStatus}
+              onChange={(e) => activeTab === 'recurring' ? setFilterStatusRecurring(e.target.value) : setFilterStatus(e.target.value)}
             >
               <option value="in_progress">В работе</option>
               <option value="overdue">Просроченные</option>
@@ -1091,7 +1125,7 @@ function Tasks() {
                             )}
                             {t.next_run_at && (
                               <div className="text-xs text-gray-600">
-                                📅 След: {formatDate(t.next_run_at)}
+                                📅 След: {formatDateAsIs(t.next_run_at).split(' ')[0]}
                               </div>
                             )}
                             <div className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
@@ -1241,16 +1275,17 @@ function Tasks() {
                                     )}
                                     {canManage && (
                                       <button
-                                        className="inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
+                                        className="inline-flex items-center px-3 py-1.5 border border-orange-300 text-xs font-medium rounded-md text-orange-700 bg-orange-50 hover:bg-orange-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 transition-colors"
                                         onClick={() => toggleStatus(t.id, 'done')}
+                                        title="Приостановить автосоздание задач по этому шаблону"
                                       >
-                                        Завершить
+                                        ⏸️ Приостановить
                                       </button>
                                     )}
                                   </>
                                 )
                               }
-                              // Для завершенных повторяющихся задач
+                              // Для завершенных повторяющихся задач (приостановленных)
                               else {
                                 return (
                                   <>
@@ -1265,10 +1300,11 @@ function Tasks() {
                                     )}
                                     {(t.executor_id === userId || t.author_id === userId || isAdmin(role)) && (
                                       <button
-                                        className="inline-flex items-center px-3 py-1.5 border border-yellow-300 text-xs font-medium rounded-md text-yellow-700 bg-yellow-50 hover:bg-yellow-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500 transition-colors"
+                                        className="inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
                                         onClick={() => toggleStatus(t.id, 'in_progress')}
+                                        title="Возобновить автосоздание задач по этому шаблону"
                                       >
-                                        Возобновить
+                                        ▶️ Возобновить
                                       </button>
                                     )}
                                   </>
@@ -1365,10 +1401,14 @@ function Tasks() {
               </p>
               {activeTab === 'recurring' && (
                 <div className="mt-6 p-4 bg-blue-50 rounded-lg max-w-lg mx-auto">
-                  <h4 className="font-medium text-blue-900 mb-2">Что такое повторяющиеся задачи?</h4>
+                  <h4 className="font-medium text-blue-900 mb-2">Что такое шаблоны повторяющихся задач?</h4>
+                  <p className="text-sm text-blue-700 mb-2">
+                    Шаблоны повторяющихся задач автоматически создают новые задачи по расписанию (ежедневно, еженедельно или ежемесячно).
+                    Это удобно для регулярных задач как публикации в соцсетях, отчеты или встречи. Каждая новая задача создаётся со статусом "Новая".
+                  </p>
                   <p className="text-sm text-blue-700">
-                    Повторяющиеся задачи автоматически создаются по расписанию (ежедневно, еженедельно или ежемесячно).
-                    Это удобно для регулярных задач как публикации в соцсетях, отчеты или встречи.
+                    <strong>💡 Управление автосозданием:</strong> Нажмите "⏸️ Приостановить" чтобы временно остановить создание новых задач по шаблону.
+                    Нажмите "▶️ Возобновить" чтобы снова запустить автосоздание.
                   </p>
                 </div>
               )}
@@ -1893,7 +1933,7 @@ function Tasks() {
                       )}
                       {selectedTask.next_run_at && (
                         <div className="text-sm">
-                          Следующая генерация: {formatDeadline(selectedTask.next_run_at)}
+                          Следующая генерация: {formatDateAsIs(selectedTask.next_run_at)}
                         </div>
                       )}
                     </div>

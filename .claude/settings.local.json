@@ -43,7 +43,15 @@
       "Bash(ps:*)",
       "Read(//proc/**)",
       "Bash(killall:*)",
-      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0dXNlciIsInJvbGUiOiJkZXNpZ25lciIsImV4cCI6MTc1OTI5NjEyMSwiaWF0IjoxNzU5MjA5NzIxfQ.6_SYrXxoSXCYlq891GcNFRl36f40q3X4P6H_HkDkuCs\")"
+      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0dXNlciIsInJvbGUiOiJkZXNpZ25lciIsImV4cCI6MTc1OTI5NjEyMSwiaWF0IjoxNzU5MjA5NzIxfQ.6_SYrXxoSXCYlq891GcNFRl36f40q3X4P6H_HkDkuCs\")",
+      "Bash(lsof:*)",
+      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsImV4cCI6MTc1OTQ3MDY1NiwiaWF0IjoxNzU5Mzg0MjU2fQ.mrHO71dQUCjasoSEQ_1tso2-bBQoxhNvD8oyoyZFj9w\")",
+      "Bash(pip3 list:*)",
+      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsImV4cCI6MTc1OTU2MDU0MiwiaWF0IjoxNzU5NDc0MTQyfQ.kBcloM9HV5MGy8u9NLwASq8zV81flBKOOQOPB_RPTG0\")",
+      "Bash(./stop_bot.sh:*)",
+      "Bash(./start_bot.sh:*)",
+      "Read(//dev/pts/**)",
+      "Bash(readlink:*)"
     ],
     "deny": [],
     "ask": [],

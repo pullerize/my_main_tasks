@@ -1,10 +1,21 @@
-fastapi
-uvicorn
-sqlalchemy
-pydantic
-passlib[bcrypt]
-python-jose
-python-dotenv
-python-multipart
-psycopg2-binary
-wget
+# ==================== Web Framework ====================
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# ==================== Database ====================
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
+# ==================== Data Validation ====================
+pydantic>=2.0.0
+python-multipart>=0.0.6
+
+# ==================== Authentication ====================
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0
+
+# ==================== Configuration ====================
+python-dotenv>=1.0.0
+
+# ==================== Telegram Bot ====================
+python-telegram-bot>=20.0

@@ -1059,7 +1059,16 @@ function ExpenseReportsSection() {
       }
 
       // Получаем расходы сотрудников для конкретного проекта
-      const employeeRes = await fetch(`${API_URL}/employee-expenses`, {
+      // Формируем параметры для фильтрации по месяцу
+      const year = new Date().getFullYear()
+      const monthStr = String(month).padStart(2, '0')
+      const lastDay = new Date(year, month, 0).getDate()
+      const employeeParams = new URLSearchParams()
+      employeeParams.append('start_date', `${year}-${monthStr}-01`)
+      employeeParams.append('end_date', `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`)
+      employeeParams.append('all_users', 'true')
+
+      const employeeRes = await fetch(`${API_URL}/employee-expenses?${employeeParams}`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       let employeeExpenses: any[] = []
@@ -1095,6 +1104,14 @@ function ExpenseReportsSection() {
   const loadGeneralExpenseData = async () => {
     setGeneralLoading(true)
     try {
+      // Вычисляем начало и конец выбранного месяца
+      const year = new Date().getFullYear()
+      const startDate = new Date(year, month - 1, 1)
+      const endDate = new Date(year, month, 0) // Последний день месяца
+
+      const startDateStr = startDate.toISOString().split('T')[0]
+      const endDateStr = endDate.toISOString().split('T')[0]
+
       // Получаем операторов с фиксированной зарплатой (is_salaried = true)
       const operatorRes = await fetch(`${API_URL}/expense-reports/operators`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -1114,8 +1131,12 @@ function ExpenseReportsSection() {
           }))
       }
 
-      // Получаем общие расходы (common-expenses)
-      const commonRes = await fetch(`${API_URL}/common-expenses/`, {
+      // Получаем общие расходы (common-expenses) с фильтром по дате
+      const commonParams = new URLSearchParams()
+      commonParams.append('start_date', startDateStr)
+      commonParams.append('end_date', endDateStr)
+
+      const commonRes = await fetch(`${API_URL}/common-expenses/?${commonParams}`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       let commonExpenses: any[] = []
@@ -1132,10 +1153,36 @@ function ExpenseReportsSection() {
         }))
       }
 
+      // Получаем расходы сотрудников без привязки к проекту с фильтром по дате
+      const employeeParams = new URLSearchParams()
+      employeeParams.append('all_users', 'true')
+      employeeParams.append('start_date', startDateStr)
+      employeeParams.append('end_date', endDateStr)
+
+      const employeeRes = await fetch(`${API_URL}/employee-expenses/?${employeeParams}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      let employeeExpensesWithoutProject: any[] = []
+      if (employeeRes.ok) {
+        const employeeData = await employeeRes.json()
+        // Фильтруем только расходы без проекта
+        employeeExpensesWithoutProject = employeeData
+          .filter((exp: any) => !exp.project_id)
+          .map((exp: any) => ({
+            id: `employee_no_project_${exp.id}`,
+            name: `${exp.name} (${exp.user?.name || 'Неизвестный'})`,
+            amount: exp.amount,
+            type: 'employee_no_project',
+            description: exp.description || 'Расход сотрудника без проекта',
+            date: exp.date
+          }))
+      }
+
       // Объединяем все общие расходы
       const allGeneralExpenses = [
         ...salariedOperators,
-        ...commonExpenses
+        ...commonExpenses,
+        ...employeeExpensesWithoutProject
       ]
 
       setGeneralExpenseData(allGeneralExpenses)
@@ -1575,6 +1622,63 @@ function ExpenseReportsSection() {
                               </td>
                               <td className="px-6 py-4">
                                 <div className="text-sm text-gray-500">{item.creator_name || '—'}</div>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap text-right">
+                                <div className="text-sm font-semibold text-gray-900">{formatCurrency(item.amount)}</div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )
+              })()}
+
+              {/* Расходы сотрудников без привязки к проектам */}
+              {(() => {
+                const employeeExpensesNoProject = generalExpenseData.filter(item => item.type === 'employee_no_project')
+                const employeeNoProjectTotal = employeeExpensesNoProject.reduce((sum, item) => sum + item.amount, 0)
+
+                return (
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div className="bg-blue-50 px-6 py-4 border-b border-blue-200">
+                      <div className="flex justify-between items-center">
+                        <h4 className="text-lg font-semibold text-blue-800">
+                          👥 Расходы сотрудников без привязки к проектам
+                        </h4>
+                        <div className="text-lg font-bold text-blue-800">
+                          {formatCurrency(employeeNoProjectTotal)}
+                        </div>
+                      </div>
+                    </div>
+                    {employeeExpensesNoProject.length === 0 ? (
+                      <div className="px-6 py-8 text-center text-gray-500">
+                        <p>Нет расходов сотрудников без привязки к проектам</p>
+                      </div>
+                    ) : (
+                      <table className="min-w-full">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Наименование</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Описание</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Дата</th>
+                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Сумма</th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                          {employeeExpensesNoProject.map((item) => (
+                            <tr key={item.id} className="hover:bg-blue-50">
+                              <td className="px-6 py-4">
+                                <div className="text-sm font-medium text-gray-900">{item.name}</div>
+                              </td>
+                              <td className="px-6 py-4">
+                                <div className="text-sm text-gray-500">{item.description}</div>
+                              </td>
+                              <td className="px-6 py-4">
+                                <div className="text-sm text-gray-500">
+                                  {item.date ? new Date(item.date).toLocaleDateString('ru-RU') : '—'}
+                                </div>
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap text-right">
                                 <div className="text-sm font-semibold text-gray-900">{formatCurrency(item.amount)}</div>

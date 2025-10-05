@@ -13,6 +13,7 @@ import logging
 import sqlite3
 import subprocess
 import atexit
+import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -41,8 +42,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.constants import UpdateType
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
-# Импортируем обработчики администратора и расходов
+# Импортируем обработчики администратора, обычных пользователей и расходов
 from admin_task_handlers import AdminTaskHandlers
+from user_task_handlers import UserTaskHandlers
 from expense_handlers import ExpenseHandlers
 
 # Конфигурация
@@ -55,7 +57,7 @@ except ImportError:
     load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-DATABASE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'shared_database.db')
+DATABASE_PATH = os.getenv('SQLITE_PATH', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'shared_database.db'))
 API_BASE_URL = 'http://127.0.0.1:8000'
 
 # Настройка логирования
@@ -64,6 +66,20 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Уменьшаем уровень логирования для httpx и telegram (убираем HTTP запросы из логов)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('telegram').setLevel(logging.WARNING)
+
+# Создаём фильтр для игнорирования ошибок 409 Conflict в логах
+class ConflictErrorFilter(logging.Filter):
+    def filter(self, record):
+        # Игнорируем ошибки 409 Conflict - они не критичны
+        return '409' not in record.getMessage() and 'Conflict' not in record.getMessage()
+
+# Применяем фильтр к telegram.ext.Updater
+updater_logger = logging.getLogger('telegram.ext.Updater')
+updater_logger.addFilter(ConflictErrorFilter())
 
 # Защита от множественного запуска
 if platform.system() == 'Windows':
@@ -189,66 +205,80 @@ class TelegramBot:
     def __init__(self, token: str):
         self.token = token
         self.app = None
+        self.API_BASE_URL = API_BASE_URL  # Добавляем API_BASE_URL как атрибут
+
+        # Connection pool для SQLite (отложенная инициализация)
+        self._connection_pool = []
+        self._pool_size = 5
+        self._pool_lock = threading.Lock()
+
+        logger.info("✅ Connection pool инициализирован")
+
         self.admin_handlers = AdminTaskHandlers(self)
+        self.user_task_handlers = UserTaskHandlers(self)
         self.expense_handlers = ExpenseHandlers(self)
 
-    def get_db_connection(self):
-        """Получение подключения к базе данных"""
+    def _create_connection(self):
+        """Создать новое подключение к БД"""
         try:
-            conn = sqlite3.connect(DATABASE_PATH)
+            logger.info(f"Попытка подключения к БД: {DATABASE_PATH}")
+            conn = sqlite3.connect(
+                DATABASE_PATH,
+                timeout=30.0,
+                check_same_thread=False
+            )
             conn.row_factory = sqlite3.Row
+            logger.info("✅ Подключение к БД создано успешно")
             return conn
         except Exception as e:
-            logger.error(f"Ошибка подключения к БД: {e}")
+            logger.error(f"Ошибка создания подключения к БД: {e}")
             return None
+
+    def get_db_connection(self):
+        """Получить подключение из пула"""
+        with self._pool_lock:
+            if self._connection_pool:
+                conn = self._connection_pool.pop()
+                # Проверяем жизнь соединения
+                try:
+                    conn.execute("SELECT 1")
+                    return conn
+                except:
+                    # Соединение мертво, создаем новое
+                    return self._create_connection()
+            else:
+                # Пул пуст, создаем новое соединение
+                return self._create_connection()
+
+    def return_db_connection(self, conn):
+        """Вернуть подключение в пул"""
+        if conn:
+            with self._pool_lock:
+                if len(self._connection_pool) < self._pool_size:
+                    self._connection_pool.append(conn)
+                else:
+                    conn.close()
 
     def get_user_by_telegram_id(self, telegram_id: int, username: str = None):
-        """Получение пользователя по Telegram ID или username"""
-        conn = self.get_db_connection()
-        if not conn:
-            return None
-
+        """Получение пользователя по Telegram ID или username через API"""
         try:
-            # Сначала пытаемся найти по telegram_id
-            cursor = conn.execute(
-                "SELECT * FROM users WHERE telegram_id = ?",
-                (telegram_id,)
+            import requests
+            # Используем API вместо прямого доступа к БД для избежания проблем с SQLite на Windows FS
+            response = requests.get(
+                f'{API_BASE_URL}/users/by-telegram/{telegram_id}',
+                params={'username': username} if username else {},
+                timeout=5
             )
-            user = cursor.fetchone()
 
-            # Если не найден по telegram_id и есть username, пытаемся найти по username
-            if not user and username:
-                cursor = conn.execute(
-                    "SELECT * FROM users WHERE telegram_username = ? AND telegram_id IS NULL",
-                    (username,)
-                )
-                user = cursor.fetchone()
-
-                # Если найден по username, обновляем telegram_id
-                if user:
-                    conn.execute(
-                        "UPDATE users SET telegram_id = ? WHERE id = ?",
-                        (telegram_id, user['id'])
-                    )
-                    conn.commit()
-                    print(f"DEBUG: Updated telegram_id for user {user['name']} (username: @{username})")
-
-            conn.close()
-
-            if user:
-                user_dict = dict(user)
-                # Обновляем telegram_id в возвращаемом словаре, если он был обновлен
-                if username and user_dict.get('telegram_id') is None:
-                    user_dict['telegram_id'] = telegram_id
-
+            if response.status_code == 200:
+                user_dict = response.json()
                 # Проверяем активность пользователя
                 if user_dict.get('role') == 'inactive' or not user_dict.get('is_active', True):
                     return None
                 return user_dict
             return None
         except Exception as e:
-            logger.error(f"Ошибка получения пользователя: {e}")
-            conn.close()
+            logger.error(f"Ошибка получения пользователя через API: {e}")
             return None
 
     def get_user_tasks(self, user_id: int) -> List[Dict]:
@@ -463,23 +493,25 @@ class TelegramBot:
     async def get_task_types_from_api(self, role: str = None):
         """Получение типов задач из API"""
         try:
-            import requests
+            import aiohttp
             url = f'{API_BASE_URL}/tasks/types'
             if role:
                 url += f'?role={role}'
 
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if role:
-                    # Возвращаем список типов для конкретной роли
-                    return [(f"{item['icon']} {item['name']}", item['name']) for item in data]
-                else:
-                    # Возвращаем все типы
-                    return data
-            else:
-                # Fallback к старым значениям при ошибке API
-                return self.get_fallback_task_types(role)
+            timeout = aiohttp.ClientTimeout(total=5)  # Уменьшил таймаут до 5 секунд
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if role:
+                            # Возвращаем список типов для конкретной роли
+                            return [(f"{item['icon']} {item['name']}", item['name']) for item in data]
+                        else:
+                            # Возвращаем все типы
+                            return data
+                    else:
+                        # Fallback к старым значениям при ошибке API
+                        return self.get_fallback_task_types(role)
         except Exception as e:
             logger.error(f"Ошибка получения типов задач из API: {e}")
             return self.get_fallback_task_types(role)
@@ -487,14 +519,16 @@ class TelegramBot:
     async def get_task_formats_from_api(self):
         """Получение форматов задач из API"""
         try:
-            import requests
-            response = requests.get(f'{API_BASE_URL}/tasks/formats', timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                return [(f"{item['icon']} {item['name']}", item['name']) for item in data]
-            else:
-                # Fallback к старым значениям при ошибке API
-                return self.get_fallback_task_formats()
+            import aiohttp
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f'{API_BASE_URL}/tasks/formats') as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return [(f"{item['icon']} {item['name']}", item['name']) for item in data]
+                    else:
+                        # Fallback к старым значениям при ошибке API
+                        return self.get_fallback_task_formats()
         except Exception as e:
             logger.error(f"Ошибка получения форматов задач из API: {e}")
             return self.get_fallback_task_formats()
@@ -582,6 +616,22 @@ class TelegramBot:
 
         return keyboard
 
+    async def clear_chat_history(self, update: Update, context, limit: int = 50):
+        """Очистка истории чата (удаление последних N сообщений)"""
+        try:
+            chat_id = update.effective_chat.id
+            message_id = update.effective_message.message_id
+
+            # Удаляем последние N сообщений
+            for i in range(1, limit + 1):
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=message_id - i)
+                except Exception:
+                    # Сообщение не найдено или уже удалено
+                    pass
+        except Exception as e:
+            logger.error(f"Ошибка очистки истории чата: {e}")
+
     async def start_command(self, update: Update, context):
         """Команда /start"""
         user = update.effective_user
@@ -621,29 +671,28 @@ class TelegramBot:
             role_emoji = role_emojis.get(db_user['role'], '👤')
             role_name = role_names.get(db_user['role'], db_user['role'])
 
-            # Создаем кнопки для основных действий в зависимости от роли
-            if db_user['role'] == 'admin':
-                keyboard = [
-                    ["🔧 Управление задачами"],
-                    ["💰 Расходы", "📊 Отчеты"]
-                ]
-            else:
-                keyboard = [
-                    ["🔧 Управление задачами"],
-                    ["💰 Расходы"]
-                ]
+            # Создаем кнопки для основных действий
+            keyboard = [
+                ["🔧 Управление задачами"],
+                ["💰 Расходы"],
+                ["🗑️ Очистить историю сообщений"]
+            ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-            message = f"""
-⭐ **Добро пожаловать в 8Bit!** ⭐
+            # Определяем статус активации
+            access_status = "🟢 Активирован" if db_user['role'] != 'inactive' else "🔴 Не активирован"
 
-┌──────────────────────────────┐
-│     {role_emoji} **{db_user['name']}**
-│     🏆 {role_name}
-└──────────────────────────────┘
+            message = f"""Добро пожаловать в 8Bit Digital!
 
-🚀 **Выберите действие:**
-            """
+
+👤 {db_user['name']} — наш 🏆 {role_name}
+
+🔑 Уровень доступа: {access_status}
+
+
+Готовы взять новый проект в работу?
+
+Выберите действие ниже ⬇️"""
 
             await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
             return
@@ -878,7 +927,8 @@ class TelegramBot:
         keyboard = [
             ["📋 Принятые в работу", "📝 Мои задачи"],
             ["🔧 Управление задачами"],
-            ["💰 Расходы"]
+            ["💰 Расходы"],
+                    ["🏠 Главное меню"]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -994,8 +1044,12 @@ class TelegramBot:
             await self.admin_handlers.handle_admin_create_task(query, context)
         elif query.data.startswith("select_role_"):
             await self.admin_handlers.handle_role_selection(query, context)
+        elif query.data.startswith("executor_page_"):
+            await self.admin_handlers.handle_executor_page(query, context)
         elif query.data.startswith("select_executor_"):
             await self.admin_handlers.handle_executor_selection(query, context)
+        elif query.data.startswith("project_page_"):
+            await self.admin_handlers.handle_project_page(query, context)
         elif query.data.startswith("select_project_") and 'admin_task_creation' in context.user_data:
             await self.admin_handlers.handle_project_selection(query, context)
         elif query.data.startswith("select_task_type_") and 'admin_task_creation' in context.user_data:
@@ -1004,6 +1058,9 @@ class TelegramBot:
             await self.admin_handlers.handle_format_selection(query, context)
         elif query.data == "back_to_main":
             await self.handle_back_to_main(query, context)
+        elif query.data.startswith("accept_task_"):
+            task_id = query.data.replace("accept_task_", "")
+            await self.handle_accept_task_callback(query, context, task_id)
         else:
             logger.warning(f"Неизвестный callback: {query.data}")
 
@@ -1039,6 +1096,48 @@ class TelegramBot:
             logger.error(f"Ошибка в handle_reports_menu: {e}")
             await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
 
+    async def handle_accept_task_callback(self, query, context, task_id):
+        """Обработка принятия задачи в работу через callback кнопку"""
+        try:
+            # Меняем статус задачи напрямую в БД
+            conn = self.get_db_connection()
+            if not conn:
+                await query.edit_message_text(
+                    "❌ Ошибка подключения к базе данных",
+                    parse_mode='Markdown'
+                )
+                return
+
+            # Обновляем статус задачи
+            from datetime import datetime
+            accepted_at = datetime.now().isoformat()
+
+            cursor = conn.execute(
+                "UPDATE tasks SET status = 'in_progress', accepted_at = ? WHERE id = ?",
+                (accepted_at, task_id)
+            )
+            conn.commit()
+
+            if cursor.rowcount > 0:
+                conn.close()
+                await query.edit_message_text(
+                    f"✅ **Задача #{task_id} принята в работу!**\n\n"
+                    f"Статус изменен на 'В работе'",
+                    parse_mode='Markdown'
+                )
+            else:
+                conn.close()
+                await query.edit_message_text(
+                    f"❌ Задача #{task_id} не найдена",
+                    parse_mode='Markdown'
+                )
+        except Exception as e:
+            logger.error(f"Ошибка при принятии задачи #{task_id}: {e}")
+            await query.edit_message_text(
+                "❌ Произошла ошибка при принятии задачи",
+                parse_mode='Markdown'
+            )
+
     async def handle_back_to_main(self, query, context):
         """Возврат в главное меню"""
         user = query.from_user
@@ -1068,30 +1167,28 @@ class TelegramBot:
             role_emoji = role_emojis.get(db_user['role'], '👤')
             role_name = role_names.get(db_user['role'], db_user['role'])
 
-            # Создаем кнопки для основных действий в зависимости от роли
-            if db_user['role'] == 'admin':
-                keyboard = [
-                    ["🔧 Управление задачами"],
-                    ["💰 Расходы"],
-                    ["📊 Отчеты"]
-                ]
-            else:
-                keyboard = [
-                    ["🔧 Управление задачами"],
-                    ["💰 Расходы"]
-                ]
+            # Создаем кнопки для основных действий
+            keyboard = [
+                ["🔧 Управление задачами"],
+                ["💰 Расходы"],
+                ["🗑️ Очистить историю сообщений"]
+            ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-            message = f"""
-⭐ **Добро пожаловать в 8Bit!** ⭐
+            # Определяем статус активации
+            access_status = "🟢 Активирован" if db_user['role'] != 'inactive' else "🔴 Не активирован"
 
-┌──────────────────────────────┐
-│     {role_emoji} **{db_user['name']}**
-│     🏆 {role_name}
-└──────────────────────────────┘
+            message = f"""Добро пожаловать в 8Bit Digital!
 
-🚀 **Выберите действие:**
-            """
+
+👤 {db_user['name']} — наш 🏆 {role_name}
+
+🔑 Уровень доступа: {access_status}
+
+
+Готовы взять новый проект в работу?
+
+Выберите действие ниже ⬇️"""
 
             await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
 
@@ -1422,11 +1519,24 @@ class TelegramBot:
 
     async def text_message(self, update: Update, context):
         """Обработчик текстовых сообщений"""
+        # Игнорируем сообщения от ботов (включая самого себя)
+        if update.message.from_user.is_bot:
+            return
+
         text = update.message.text.strip()
+        user = update.effective_user
 
         # Обработка кнопки возврата в главное меню (должна быть первой)
-        if text == "🔙 Главное меню" or text == "🔙 Назад":
-            # Возврат к главному меню
+        if text == "🔙 Главное меню" or text == "🔙 Назад" or text == "🏠 Главное меню":
+            # Возвращаемся к главному меню без очистки истории
+            await self.start_command(update, context)
+            return
+
+        # Обработка кнопки очистки истории
+        if text == "🗑️ Очистить историю сообщений":
+            await self.clear_chat_history(update, context, limit=100)
+            await update.message.reply_text("✅ История сообщений очищена")
+            # Показываем главное меню
             await self.start_command(update, context)
             return
 
@@ -1441,7 +1551,7 @@ class TelegramBot:
             if db_user['role'] == 'admin':
                 await self.admin_handlers.handle_admin_task_management(update, context)
             else:
-                await self.handle_user_task_management(update, context)
+                await self.user_task_handlers.handle_user_task_management(update, context)
             return
 
         elif text == "💰 Расходы":
@@ -1454,18 +1564,45 @@ class TelegramBot:
             await self.expense_handlers.handle_expenses_menu(update, context)
             return
 
-        elif text == "📊 Отчеты":
+        elif text == "➕ Добавить расход":
             user = update.effective_user
             db_user = self.get_user_by_telegram_id(user.id, user.username)
             if not db_user:
                 await update.message.reply_text("❌ Необходима авторизация. Используйте /start")
                 return
 
-            if db_user['role'] != 'admin':
-                await update.message.reply_text("❌ Доступ запрещен. Только для администраторов.")
+            await self.expense_handlers.handle_add_expense_start(update, context)
+            return
+
+        elif text == "📋 Просмотреть мои расходы":
+            user = update.effective_user
+            db_user = self.get_user_by_telegram_id(user.id, user.username)
+            if not db_user:
+                await update.message.reply_text("❌ Необходима авторизация. Используйте /start")
                 return
 
-            await self.handle_reports_menu(update, context)
+            await self.expense_handlers.handle_view_expenses_start(update, context)
+            return
+
+        elif text in ["📅 Январь", "📅 Февраль", "📅 Март", "📅 Апрель", "📅 Май", "📅 Июнь",
+                      "📅 Июль", "📅 Август", "📅 Сентябрь", "📅 Октябрь", "📅 Ноябрь", "📅 Декабрь",
+                      "📅 За все время", "📅 За сегодня", "📅 За неделю", "📅 За месяц"]:
+            user = update.effective_user
+            db_user = self.get_user_by_telegram_id(user.id, user.username)
+            if not db_user:
+                await update.message.reply_text("❌ Необходима авторизация. Используйте /start")
+                return
+
+            # Проверяем контекст - если это архивные задачи, передаем в admin_handlers
+            archived_data = context.user_data.get('archived_tasks_view')
+            if archived_data and archived_data.get('step') == 'period_selection':
+                # Обработка в admin_handlers
+                if db_user['role'] == 'admin':
+                    await self.admin_handlers.handle_archived_tasks_period_selection(update, context, text)
+                    return
+
+            # Иначе это расходы
+            await self.expense_handlers.handle_period_selection_text(update, context, text)
             return
 
         elif text == "📋 Принятые в работу":
@@ -1746,10 +1883,66 @@ class TelegramBot:
 
         # Обработка создания расходов
         if 'expense_creation' in context.user_data:
-            if text == "/cancel":
+            expense_data = context.user_data['expense_creation']
+
+            if text == "/cancel" or text == "❌ Отмена":
                 context.user_data.pop('expense_creation', None)
-                await update.message.reply_text("❌ Создание расхода отменено.")
+                # Возвращаемся в главное меню
+                await self.start_command(update, context)
                 return
+
+            if text == "◀️ Назад":
+                # Возврат на шаг назад
+                current_step = expense_data.get('step')
+                if current_step == 'amount':
+                    expense_data['step'] = 'name'
+                    await self.expense_handlers.handle_add_expense_start(update, context)
+                elif current_step == 'project':
+                    expense_data['step'] = 'amount'
+                    keyboard = [
+                        ["◀️ Назад", "❌ Отмена"]
+                    ]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+                    message = f"""➕ **Новый расход**
+
+**Шаг 2/5:** Введите сумму расхода
+
+💰 Введите сумму в сумах (только цифры)
+
+📝 Например: 50000"""
+                    await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+                elif current_step == 'description':
+                    expense_data['step'] = 'project'
+                    # Показываем выбор проекта заново
+                    await self.expense_handlers.show_project_selection(update, context)
+                elif current_step == 'date':
+                    expense_data['step'] = 'description'
+                    # Показываем запрос комментария
+                    projects = self.expense_handlers.get_projects()
+                    project_name = "Без привязки к проекту"
+                    if expense_data.get('project_id'):
+                        project = next((p for p in projects if p['id'] == expense_data['project_id']), None)
+                        if project:
+                            project_name = project['name']
+
+                    keyboard = [
+                        ["⏭️ Пропустить"],
+                        ["◀️ Назад", "❌ Отмена"]
+                    ]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+                    message = f"""➕ **Новый расход**
+
+**Шаг 4/5:** Введите комментарий (необязательно)
+
+📝 **Текущие данные:**
+• Наименование: {expense_data['name']}
+• Сумма: {expense_data['amount']:,.0f} сум
+• Проект: {project_name}
+
+💬 Введите комментарий к расходу"""
+                    await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+                return
+
             await self.expense_handlers.handle_expense_text_input(update, context)
             return
 
@@ -1794,17 +1987,54 @@ class TelegramBot:
                 await self.admin_handlers.handle_edit_task(update, context)
                 return
 
-        # Обработка кнопок администраторского меню задач
+        # Обработка кнопок меню задач
         if text == "➕ Создать задачу":
             user = update.effective_user
             db_user = self.get_user_by_telegram_id(user.id, user.username)
             if db_user and db_user['role'] == 'admin':
                 await self.admin_handlers.handle_admin_create_task(update, context)
+            elif db_user and db_user['role'] in ['smm_manager', 'designer']:
+                await self.user_task_handlers.handle_user_create_task(update, context)
+            return
+
+        # Обработка кнопки "Активные задачи" для обычных пользователей
+        if text == "📋 Активные задачи":
+            user = update.effective_user
+            db_user = self.get_user_by_telegram_id(user.id, user.username)
+            if db_user and db_user['role'] in ['smm_manager', 'designer']:
+                await self.user_task_handlers.handle_active_tasks(update, context)
+                return
+            # Для админов продолжаем обработку в admin_handlers
+
+        # Обработка кнопки "Завершенные задачи" для обычных пользователей
+        if text == "✅ Завершенные задачи":
+            user = update.effective_user
+            db_user = self.get_user_by_telegram_id(user.id, user.username)
+            if db_user and db_user['role'] in ['smm_manager', 'designer']:
+                await self.user_task_handlers.handle_completed_tasks(update, context)
+            return
+
+        # Обработка кнопки "Не принятые в работу" для всех пользователей
+        if text == "🆕 Не принятые в работу":
+            await self.admin_handlers.handle_new_tasks_start(update, context)
             return
 
         elif text in ["🔑 Администратор", "📱 СММ-менеджер", "🎨 Дизайнер", ]:
-            # Получаем данные активных задач
+
+            # Проверяем наличие user_task_creation для обычных пользователей
+            user_task_data = context.user_data.get('user_task_creation')
+            if user_task_data and user_task_data.get('step') == 'role_selection':
+                await self.user_task_handlers.handle_role_selection_text(update, context)
+                return
+
+            # Получаем данные активных и архивных задач
             active_tasks_data = context.user_data.get('active_tasks_view')
+            archived_tasks_data = context.user_data.get('archived_tasks_view')
+
+            # Обработка выбора роли в просмотре архивных задач (приоритет)
+            if archived_tasks_data and archived_tasks_data.get('step') == 'role_selection':
+                await self.admin_handlers.handle_archived_tasks_role_selection(update, context, text)
+                return
 
             # Обработка выбора роли в просмотре активных задач
             if active_tasks_data and active_tasks_data.get('step') == 'role_selection':
@@ -1852,24 +2082,86 @@ class TelegramBot:
         # Обработка администраторских сообщений (включая активные задачи)
         user = update.effective_user
         db_user = self.get_user_by_telegram_id(user.id, user.username)
-        print(f"DEBUG: Text message received: '{text}' from user {user.id} (@{user.username})")
-        print(f"DEBUG: db_user found: {db_user is not None}")
         if db_user:
-            print(f"DEBUG: User role: {db_user.get('role')}")
+            logger.debug(f"User found: {db_user.get('name')}, role: {db_user.get('role')}")
 
         if db_user and db_user['role'] == 'admin':
-            print(f"DEBUG: User is admin, calling admin message handler")
             # Пробуем обработать сообщение как администраторское
-            if await self.admin_handlers.handle_admin_message(update, context, text):
-                print(f"DEBUG: Admin message handler processed the message")
+            result = await self.admin_handlers.handle_admin_message(update, context, text)
+            if result:
                 return  # Сообщение обработано
             else:
-                print(f"DEBUG: Admin message handler did not process the message")
+                logger.debug("Admin message not handled by admin_handlers")
 
-        elif text == "📁 Архив задач":
-            # TODO: Добавить обработку архива задач
-            await update.message.reply_text("📁 Функция архива задач будет добавлена позже.")
-            return
+        # Обработка кнопок управления задачами для обычных пользователей
+        if db_user and db_user['role'] in ['smm_manager', 'designer']:
+            # Обработка кнопок "Завершить задачу" и "Удалить задачу"
+            if text == "✅ Завершить задачу":
+                await self.user_task_handlers.handle_complete_task(update, context)
+                return
+            elif text == "🗑️ Удалить задачу":
+                await self.user_task_handlers.handle_delete_task(update, context)
+                return
+
+            # Обработка ввода ID задачи
+            if context.user_data.get('awaiting_task_id'):
+                handled = await self.user_task_handlers.handle_task_id_input(update, context)
+                if handled:
+                    return
+
+            # Обработка процесса создания задачи обычными пользователями
+            user_task_data = context.user_data.get('user_task_creation')
+            if user_task_data:
+                step = user_task_data.get('step')
+
+                # Обработка отмены
+                if text == "❌ Отмена":
+                    context.user_data.pop('user_task_creation', None)
+                    await self.user_task_handlers.handle_user_task_management(update, context)
+                    return
+
+                # Обработка выбора роли
+                if step == 'role_selection':
+                    await self.user_task_handlers.handle_role_selection_text(update, context)
+                    return
+                # Обработка выбора исполнителя
+                elif step == 'executor_selection':
+                    await self.user_task_handlers.handle_executor_selection_text(update, context)
+                    return
+                # Обработка ввода названия задачи
+                elif step == 'title':
+                    await self.user_task_handlers.handle_task_title(update, context)
+                    return
+                # Обработка ввода описания задачи
+                elif step == 'description':
+                    await self.user_task_handlers.handle_task_description(update, context)
+                    return
+                # Обработка выбора проекта
+                elif step == 'project':
+                    await self.user_task_handlers.handle_task_project(update, context)
+                    return
+                # Обработка выбора типа задачи
+                elif step == 'task_type':
+                    await self.user_task_handlers.handle_task_type(update, context)
+                    return
+                # Обработка выбора формата (для дизайнеров)
+                elif step == 'format_selection':
+                    await self.user_task_handlers.handle_task_format(update, context)
+                    return
+                # Обработка выбора дедлайна
+                elif step == 'deadline':
+                    await self.user_task_handlers.handle_task_deadline(update, context)
+                    return
+                # Обработка подтверждения создания задачи
+                elif step == 'final_confirmation':
+                    await self.user_task_handlers.handle_task_confirmation(update, context)
+                    return
+                # Обработка выбора поля для редактирования
+                elif step == 'edit_selection':
+                    await self.user_task_handlers.handle_edit_selection(update, context)
+                    return
+
+        # Кнопка "Архив задач" обрабатывается в admin_handlers
 
         # Обработка кнопок создания задач
         if text == "🔙 Отмена":
@@ -2119,18 +2411,29 @@ class TelegramBot:
                 await self.handle_deadline_text_input(update, context)
                 return
 
+        # Передаем обработку администраторским обработчикам
+        user = update.effective_user
+        db_user = self.get_user_by_telegram_id(user.id, user.username)
+        if db_user and db_user['role'] == 'admin':
+            handled = await self.admin_handlers.handle_text_messages_for_admin(update, context)
+            if handled:
+                return
+
         # Не отвечаем на обычные текстовые сообщения, если они не относятся к процессу создания задачи
         # Это предотвращает спам и нежелательные сообщения
         pass
 
     async def error_handler(self, update: Update, context):
         """Обработчик ошибок"""
-        logger.error(f"Ошибка: {context.error}")
+        error_message = str(context.error)
 
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "😔 Произошла ошибка при обработке запроса. Попробуйте позже."
-            )
+        # Игнорируем конфликты 409 - это нормально, если запущен другой экземпляр
+        if "409" in error_message or "Conflict" in error_message:
+            return  # Не логируем эти ошибки, они не критичны
+
+        # Логируем только серьёзные ошибки
+        logger.error(f"Ошибка: {context.error}")
+        # Не показываем сообщение об ошибке пользователю - просто логируем
 
     def setup_handlers(self):
         """Настройка обработчиков команд"""
@@ -2517,11 +2820,6 @@ class TelegramBot:
             await query.edit_message_text("❌ Необходима авторизация.")
             return
 
-        # Только админы могут удалять задачи
-        if db_user['role'] != 'admin':
-            await query.edit_message_text("❌ Только администраторы могут удалять задачи")
-            return
-
         try:
             # Получаем информацию о задаче
             conn = self.get_db_connection()
@@ -2529,11 +2827,16 @@ class TelegramBot:
                 await query.edit_message_text("❌ Ошибка подключения к базе данных")
                 return
 
-            cursor = conn.execute("SELECT title FROM tasks WHERE id = ?", (task_id,))
+            cursor = conn.execute("SELECT title, executor_id FROM tasks WHERE id = ?", (task_id,))
             task = cursor.fetchone()
 
             if not task:
                 await query.edit_message_text("❌ Задача не найдена")
+                return
+
+            # Проверяем права доступа (админ или исполнитель задачи)
+            if db_user['role'] != 'admin' and task['executor_id'] != db_user['id']:
+                await query.edit_message_text("❌ У вас нет прав для удаления этой задачи")
                 return
 
             # Удаляем задачу

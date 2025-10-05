@@ -226,8 +226,8 @@ function Analytics() {
     // Производительность команды - используем отфильтрованные по времени задачи
     const teamProductivity = calculateTeamProductivity(users, filteredTasks)
 
-    // Динамика задач по периодам
-    const tasksByPeriod = calculateTasksByPeriod(allTasks)
+    // Динамика задач по периодам - используем отфильтрованные задачи
+    const tasksByPeriod = calculateTasksByPeriod(filteredTasks)
 
     // Расчет трендов
     const totalTrend = calculateTrend(filteredTasks.length, previousPeriodTasks.length)
@@ -258,22 +258,32 @@ function Analytics() {
   const filterTasksByTimeRange = (tasks: Task[]) => {
     const now = new Date()
     let startDate: Date
-    let endDate: Date = now
+    let endDate: Date
 
     if (timeRange === 'custom') {
       if (!customStartDate || !customEndDate) return tasks
       startDate = new Date(customStartDate)
       endDate = new Date(customEndDate)
+      endDate.setHours(23, 59, 59, 999)
     } else {
       switch (timeRange) {
         case 'week':
           startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+          startDate.setHours(0, 0, 0, 0)
+          endDate = new Date()
+          endDate.setHours(23, 59, 59, 999)
           break
         case 'month':
           startDate = new Date(now.getFullYear(), now.getMonth(), 1)
+          startDate.setHours(0, 0, 0, 0)
+          endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+          endDate.setHours(23, 59, 59, 999)
           break
         case 'year':
           startDate = new Date(now.getFullYear(), 0, 1)
+          startDate.setHours(0, 0, 0, 0)
+          endDate = new Date(now.getFullYear(), 11, 31)
+          endDate.setHours(23, 59, 59, 999)
           break
         default:
           return tasks

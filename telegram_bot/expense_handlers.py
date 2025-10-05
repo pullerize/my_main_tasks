@@ -20,34 +20,31 @@ class ExpenseHandlers:
     def __init__(self, bot_instance):
         self.bot = bot_instance
 
-    async def handle_expenses_menu(self, query, context):
+    async def handle_expenses_menu(self, update, context):
         """Главное меню расходов"""
         try:
-            user = query.from_user
+            user = update.effective_user
             db_user = self.bot.get_user_by_telegram_id(user.id, user.username)
 
             if not db_user:
-                await query.edit_message_text(
+                await update.message.reply_text(
                     "❌ Пользователь не найден. Пожалуйста, авторизуйтесь заново."
                 )
                 return
 
             keyboard = [
-                [InlineKeyboardButton("➕ Ввести новый расход", callback_data="add_expense")],
-                [InlineKeyboardButton("📋 Посмотреть мои расходы", callback_data="view_expenses")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+                ["➕ Добавить расход", "📋 Просмотреть мои расходы"],
+                ["🏠 Главное меню"]
             ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-            message = f"""
-💰 **Управление расходами**
+            message = f"""💰 **Управление расходами**
 
 👤 **{db_user['name']}**
 
-**Выберите действие:**
-            """
+Выберите действие:"""
 
-            await query.edit_message_text(
+            await update.message.reply_text(
                 message,
                 parse_mode='Markdown',
                 reply_markup=reply_markup
@@ -55,36 +52,95 @@ class ExpenseHandlers:
 
         except Exception as e:
             logger.error(f"Ошибка в handle_expenses_menu: {e}")
-            await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
+            await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
-    async def handle_add_expense_start(self, query, context):
+    async def handle_add_expense_start(self, update, context):
         """Начало процесса добавления расхода"""
         try:
-            # Инициализируем данные для создания расхода
-            context.user_data['expense_creation'] = {
-                'step': 'name',
-                'name': '',
-                'amount': '',
-                'date': '',
-                'project_id': None,
-                'description': ''
-            }
+            user = update.effective_user
+            db_user = self.bot.get_user_by_telegram_id(user.id, user.username)
 
-            message = """
-➕ **Новый расход**
+            # Если администратор, показываем выбор типа расхода
+            if db_user and db_user['role'] == 'admin':
+                context.user_data['expense_creation'] = {
+                    'step': 'expense_type',
+                    'expense_type': None,  # personal или company
+                    'name': '',
+                    'amount': '',
+                    'date': '',
+                    'project_id': None,
+                    'description': ''
+                }
+
+                keyboard = [
+                    ["👤 Личный расход", "🏢 Расход компании"],
+                    ["❌ Отмена"]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                message = """➕ **Новый расход**
+
+Выберите тип расхода:"""
+
+                await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+            else:
+                # Для обычных пользователей сразу переходим к вводу названия
+                context.user_data['expense_creation'] = {
+                    'step': 'name',
+                    'expense_type': 'personal',
+                    'name': '',
+                    'amount': '',
+                    'date': '',
+                    'project_id': None,
+                    'description': ''
+                }
+
+                keyboard = [
+                    ["❌ Отмена"]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                message = """➕ **Новый расход**
 
 **Шаг 1/5:** Введите наименование расхода
 
-📝 *Например: Обед, Транспорт, Канцелярия, Оборудование*
+📝 Например: Обед, Транспорт, Канцелярия, Оборудование"""
 
-Или нажмите /cancel для отмены
-            """
-
-            await query.edit_message_text(message, parse_mode='Markdown')
+                await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
 
         except Exception as e:
             logger.error(f"Ошибка в handle_add_expense_start: {e}")
-            await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
+            await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
+    async def handle_view_expenses_start(self, update, context):
+        """Начало просмотра расходов - выбор периода"""
+        try:
+            # Получаем текущий год
+            current_year = datetime.now().year
+
+            keyboard = [
+                ["📅 Январь", "📅 Февраль", "📅 Март"],
+                ["📅 Апрель", "📅 Май", "📅 Июнь"],
+                ["📅 Июль", "📅 Август", "📅 Сентябрь"],
+                ["📅 Октябрь", "📅 Ноябрь", "📅 Декабрь"],
+                ["📅 За все время"],
+                ["🔙 Назад"]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+            message = f"""📋 **Мои расходы**
+
+Выберите месяц {current_year} года или период для просмотра:"""
+
+            await update.message.reply_text(
+                message,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+
+        except Exception as e:
+            logger.error(f"Ошибка в handle_view_expenses_start: {e}")
+            await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
     async def handle_view_expenses_periods(self, query, context):
         """Выбор периода для просмотра расходов"""
@@ -113,6 +169,136 @@ class ExpenseHandlers:
         except Exception as e:
             logger.error(f"Ошибка в handle_view_expenses_periods: {e}")
             await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
+
+    async def handle_period_selection_text(self, update, context, period_text):
+        """Обработка выбора периода через текст и показ расходов"""
+        try:
+            user = update.effective_user
+            db_user = self.bot.get_user_by_telegram_id(user.id, user.username)
+
+            if not db_user:
+                await update.message.reply_text("❌ Пользователь не найден.")
+                return
+
+            # Маппинг месяцев
+            months = {
+                "📅 Январь": (1, "январь"),
+                "📅 Февраль": (2, "февраль"),
+                "📅 Март": (3, "март"),
+                "📅 Апрель": (4, "апрель"),
+                "📅 Май": (5, "май"),
+                "📅 Июнь": (6, "июнь"),
+                "📅 Июль": (7, "июль"),
+                "📅 Август": (8, "август"),
+                "📅 Сентябрь": (9, "сентябрь"),
+                "📅 Октябрь": (10, "октябрь"),
+                "📅 Ноябрь": (11, "ноябрь"),
+                "📅 Декабрь": (12, "декабрь")
+            }
+
+            # Определяем даты для периода
+            now = datetime.now()
+
+            if period_text == "📅 За все время":
+                start_date = None
+                period_name = "за все время"
+            elif period_text in months:
+                month_num, month_name = months[period_text]
+                current_year = now.year
+                # Начало месяца
+                start_date = datetime(current_year, month_num, 1)
+                # Конец месяца (первый день следующего месяца)
+                if month_num == 12:
+                    end_date = datetime(current_year + 1, 1, 1)
+                else:
+                    end_date = datetime(current_year, month_num + 1, 1)
+                period_name = f"{month_name} {current_year}"
+            else:
+                start_date = now - timedelta(days=30)
+                period_name = "за месяц"
+                end_date = None
+
+            # Получаем расходы за период
+            if period_text in months:
+                expenses = self.get_user_expenses_by_month(db_user['id'], start_date, end_date)
+            else:
+                expenses = self.get_user_expenses_by_period(db_user['id'], start_date)
+
+            if not expenses:
+                # Получаем роль для определения кнопок
+                if db_user['role'] == 'admin':
+                    keyboard = [
+                        ["🔧 Управление задачами"],
+                        ["💰 Расходы"],
+                        ["🏠 Главное меню"]
+                    ]
+                else:
+                    keyboard = [
+                        ["🔧 Управление задачами"],
+                        ["💰 Расходы"],
+                        ["🏠 Главное меню"]
+                    ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                message = f"""📋 **Мои расходы {period_name}**
+
+📝 Расходов за этот период не найдено.
+
+Добавьте новый расход через меню "Расходы"."""
+
+                await update.message.reply_text(
+                    message,
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+                return
+
+            # Формируем сообщение с расходами
+            total = 0
+            message = f"📋 **Мои расходы {period_name}**\n\n"
+
+            for expense in expenses:
+                amount = float(expense['amount']) if expense['amount'] else 0
+                total += amount
+
+                date_str = expense['date'] if expense['date'] else 'Не указана'
+                project_name = expense['project_name'] if expense['project_name'] else 'Без проекта'
+                description = expense['description'] if expense['description'] else ''
+
+                message += f"💳 **{expense['name']}**\n"
+                message += f"   💰 Сумма: {amount:,.0f} сум\n"
+                message += f"   📅 Дата: {date_str}\n"
+                message += f"   📁 Проект: {project_name}\n"
+                if description:
+                    message += f"   💬 Комментарий: {description}\n"
+                message += "\n"
+
+            message += f"💎 **Общая сумма: {total:,.0f} сум**"
+
+            # Определяем кнопки
+            if db_user['role'] == 'admin':
+                keyboard = [
+                    ["🔧 Управление задачами"],
+                    ["💰 Расходы"],
+                        ["🏠 Главное меню"]
+                ]
+            else:
+                keyboard = [
+                    ["🔧 Управление задачами"],
+                    ["💰 Расходы"],
+                        ["🏠 Главное меню"]
+                ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+            await update.message.reply_text(
+                message,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+
+        except Exception as e:
+            logger.error(f"Ошибка в handle_period_selection_text: {e}")
+            await update.message.reply_text("❌ Произошла ошибка при получении расходов.")
 
     async def handle_period_selection(self, query, context):
         """Обработка выбора периода и показ расходов"""
@@ -215,24 +401,50 @@ class ExpenseHandlers:
             expense_data = context.user_data['expense_creation']
             text = update.message.text.strip()
 
-            if expense_data['step'] == 'name':
+            if expense_data['step'] == 'expense_type':
+                # Обработка выбора типа расхода
+                if text == "👤 Личный расход":
+                    expense_data['expense_type'] = 'personal'
+                elif text == "🏢 Расход компании":
+                    expense_data['expense_type'] = 'company'
+                else:
+                    await update.message.reply_text("❌ Пожалуйста, выберите тип расхода из предложенных вариантов.")
+                    return
+
+                expense_data['step'] = 'name'
+
+                keyboard = [
+                    ["❌ Отмена"]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                message = """➕ **Новый расход**
+
+**Шаг 1/5:** Введите наименование расхода
+
+📝 Например: Обед, Транспорт, Канцелярия, Оборудование"""
+
+                await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+
+            elif expense_data['step'] == 'name':
                 # Сохраняем наименование
                 expense_data['name'] = text
                 expense_data['step'] = 'amount'
 
-                message = """
-➕ **Новый расход**
+                keyboard = [
+                    ["◀️ Назад", "❌ Отмена"]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                message = """➕ **Новый расход**
 
 **Шаг 2/5:** Введите сумму расхода
 
-💰 *Введите сумму в сумах (только цифры)*
+💰 Введите сумму в сумах (только цифры)
 
-📝 *Например: 50000*
+📝 Например: 50000"""
 
-Или нажмите /cancel для отмены
-                """
-
-                await update.message.reply_text(message, parse_mode='Markdown')
+                await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
 
             elif expense_data['step'] == 'amount':
                 # Проверяем и сохраняем сумму
@@ -242,59 +454,125 @@ class ExpenseHandlers:
                         raise ValueError("Сумма должна быть больше нуля")
 
                     expense_data['amount'] = amount
-                    expense_data['step'] = 'date'
 
-                    # Предлагаем сегодняшнюю дату по умолчанию
-                    today = datetime.now().strftime("%d.%m.%Y")
+                    # Если расход компании - пропускаем выбор проекта
+                    if expense_data.get('expense_type') == 'company':
+                        expense_data['step'] = 'description'
+                        expense_data['project_id'] = None
 
-                    message = f"""
-➕ **Новый расход**
+                        keyboard = [
+                            ["⏭️ Пропустить"],
+                            ["◀️ Назад", "❌ Отмена"]
+                        ]
+                        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-**Шаг 3/5:** Введите дату расхода
+                        message = f"""➕ **Новый расход компании**
 
-📅 *Введите дату в формате ДД.ММ.ГГГГ*
+**Шаг 3/4:** Введите комментарий (необязательно)
 
-📝 *Например: {today}*
+📝 **Текущие данные:**
+• Наименование: {expense_data['name']}
+• Сумма: {expense_data['amount']:,.0f} сум
 
-💡 *Для использования сегодняшней даты просто напишите "сегодня"*
+💬 Введите комментарий к расходу"""
 
-Или нажмите /cancel для отмены
-                    """
-
-                    await update.message.reply_text(message, parse_mode='Markdown')
+                        await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+                    else:
+                        # Для личных расходов показываем выбор проекта
+                        expense_data['step'] = 'project'
+                        await self.show_project_selection(update, context)
 
                 except ValueError:
                     await update.message.reply_text(
                         "❌ Неверная сумма. Пожалуйста, введите корректную сумму (только цифры).\n\n"
-                        "💰 *Например: 50000*",
+                        "💰 Например: 50000",
                         parse_mode='Markdown'
                     )
+
+            elif expense_data['step'] == 'project':
+                # Обработка выбора проекта
+                if text == "❌ Без привязки к проекту":
+                    expense_data['project_id'] = None
+                    project_name = "Без привязки к проекту"
+                else:
+                    # Убираем эмодзи и ищем проект по имени
+                    project_name_clean = text.replace("📁 ", "").strip()
+                    projects = self.get_projects()
+                    project = next((p for p in projects if p['name'].strip() == project_name_clean), None)
+
+                    if project:
+                        expense_data['project_id'] = project['id']
+                        project_name = project['name']
+                    else:
+                        await update.message.reply_text("❌ Проект не найден. Пожалуйста, выберите проект из списка.")
+                        return
+
+                expense_data['step'] = 'description'
+
+                keyboard = [
+                    ["⏭️ Пропустить"],
+                    ["◀️ Назад", "❌ Отмена"]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                message = f"""➕ **Новый расход**
+
+**Шаг 4/5:** Введите комментарий (необязательно)
+
+📝 **Текущие данные:**
+• Наименование: {expense_data['name']}
+• Сумма: {expense_data['amount']:,.0f} сум
+• Проект: {project_name}
+
+💬 Введите комментарий к расходу"""
+
+                await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
 
             elif expense_data['step'] == 'date':
                 # Обрабатываем дату
                 try:
-                    if text.lower() in ['сегодня', 'today']:
+                    if text == "📅 Сегодня" or text.lower() in ['сегодня', 'today']:
                         date_obj = datetime.now()
                     else:
                         date_obj = datetime.strptime(text, "%d.%m.%Y")
 
                     expense_data['date'] = date_obj.strftime("%Y-%m-%d")
-                    expense_data['step'] = 'project'
 
-                    # Показываем выбор проекта
-                    await self.show_project_selection(update, context)
+                    # Создаем расход
+                    await self.create_expense(update, context)
 
                 except ValueError:
                     await update.message.reply_text(
                         "❌ Неверный формат даты. Пожалуйста, введите дату в формате ДД.ММ.ГГГГ\n\n"
-                        "📅 *Например: 25.12.2024 или напишите 'сегодня'*",
+                        "📅 Например: 02.10.2025 или используйте кнопку 'Сегодня'",
                         parse_mode='Markdown'
                     )
 
             elif expense_data['step'] == 'description':
-                # Сохраняем описание и создаем расход
-                expense_data['description'] = text
-                await self.create_expense(update, context)
+                # Сохраняем описание и переходим к дате
+                if text == "⏭️ Пропустить":
+                    expense_data['description'] = ''
+                else:
+                    expense_data['description'] = text
+
+                expense_data['step'] = 'date'
+
+                today = datetime.now().strftime("%d.%m.%Y")
+                keyboard = [
+                    ["📅 Сегодня"],
+                    ["◀️ Назад", "❌ Отмена"]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+                message = f"""➕ **Новый расход**
+
+**Шаг 5/5:** Введите дату расхода
+
+📅 Введите дату в формате ДД.ММ.ГГГГ
+
+📝 Например: {today}"""
+
+                await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
 
         except Exception as e:
             logger.error(f"Ошибка в handle_expense_text_input: {e}")
@@ -306,8 +584,8 @@ class ExpenseHandlers:
             projects = self.get_projects()
 
             keyboard = []
-            # Добавляем кнопку "Без привязки к проекту"
-            keyboard.append([InlineKeyboardButton("❌ Без привязки к проекту", callback_data="project_none")])
+            # Добавляем кнопку "Без привязки к проекту" на отдельной строке
+            keyboard.append(["❌ Без привязки к проекту"])
 
             # Добавляем проекты по 2 в ряд
             for i in range(0, len(projects), 2):
@@ -315,22 +593,19 @@ class ExpenseHandlers:
                 for j in range(2):
                     if i + j < len(projects):
                         project = projects[i + j]
-                        row.append(InlineKeyboardButton(
-                            f"📁 {project['name'][:20]}{'...' if len(project['name']) > 20 else ''}",
-                            callback_data=f"project_{project['id']}"
-                        ))
+                        row.append(f"📁 {project['name']}")
                 keyboard.append(row)
 
-            keyboard.append([InlineKeyboardButton("🔙 Отмена", callback_data="my_expenses")])
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            # Добавляем кнопки навигации
+            keyboard.append(["◀️ Назад", "❌ Отмена"])
 
-            message = """
-➕ **Новый расход**
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-**Шаг 4/5:** Выберите проект
+            message = """➕ **Новый расход**
 
-📁 *Выберите проект для привязки расхода или выберите "Без привязки к проекту"*
-            """
+**Шаг 3/5:** Выберите проект
+
+📁 Выберите проект для привязки расхода или выберите "Без привязки к проекту" """
 
             await update.message.reply_text(
                 message,
@@ -414,14 +689,22 @@ class ExpenseHandlers:
                 return
 
             # Создаем расход в базе данных
-            success = self.save_expense_to_db(
-                user_id=db_user['id'],
-                name=expense_data['name'],
-                amount=expense_data['amount'],
-                date=expense_data['date'],
-                project_id=expense_data['project_id'],
-                description=expense_data['description']
-            )
+            if expense_data.get('expense_type') == 'company':
+                success = self.save_company_expense_to_db(
+                    name=expense_data['name'],
+                    amount=expense_data['amount'],
+                    date=expense_data['date'],
+                    description=expense_data['description']
+                )
+            else:
+                success = self.save_expense_to_db(
+                    user_id=db_user['id'],
+                    name=expense_data['name'],
+                    amount=expense_data['amount'],
+                    date=expense_data['date'],
+                    project_id=expense_data['project_id'],
+                    description=expense_data['description']
+                )
 
             if success:
                 # Получаем название проекта для отображения
@@ -430,8 +713,7 @@ class ExpenseHandlers:
                     projects = self.get_projects()
                     project_name = next((p['name'] for p in projects if p['id'] == expense_data['project_id']), "Неизвестный проект")
 
-                message = f"""
-✅ **Расход успешно добавлен!**
+                message = f"""✅ **Расход успешно добавлен!**
 
 📝 **Детали:**
 • Наименование: {expense_data['name']}
@@ -440,15 +722,22 @@ class ExpenseHandlers:
 • Проект: {project_name}
 {f"• Комментарий: {expense_data['description']}" if expense_data['description'] else ""}
 
-💰 Расход сохранен в системе и будет отображаться в отчетах.
-                """
+💰 Расход сохранен в системе и будет отображаться в отчетах."""
 
-                keyboard = [
-                    [InlineKeyboardButton("➕ Добавить еще расход", callback_data="add_expense")],
-                    [InlineKeyboardButton("📋 Мои расходы", callback_data="view_expenses")],
-                    [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
+                # Определяем кнопки главного меню
+                if db_user['role'] == 'admin':
+                    keyboard = [
+                        ["🔧 Управление задачами"],
+                        ["💰 Расходы"],
+                        ["🏠 Главное меню"]
+                    ]
+                else:
+                    keyboard = [
+                        ["🔧 Управление задачами"],
+                        ["💰 Расходы"],
+                        ["🏠 Главное меню"]
+                    ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
                 await update.message.reply_text(
                     message,
@@ -506,8 +795,67 @@ class ExpenseHandlers:
             conn.close()
             return False
 
+    def save_company_expense_to_db(self, name, amount, date, description=None):
+        """Сохранение расхода компании в базу данных"""
+        conn = self.bot.get_db_connection()
+        if not conn:
+            return False
+
+        try:
+            conn.execute("""
+                INSERT INTO common_expenses (
+                    name, amount, date, description, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+            """, (
+                name, float(amount), date, description, datetime.now()
+            ))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка сохранения расхода компании: {e}")
+            conn.close()
+            return False
+
     def get_user_expenses_by_period(self, user_id, start_date):
         """Получение расходов пользователя за период"""
+        conn = self.bot.get_db_connection()
+        if not conn:
+            return []
+
+        try:
+            if start_date:
+                cursor = conn.execute("""
+                    SELECT
+                        ee.id, ee.name, ee.amount, ee.date, ee.description,
+                        p.name as project_name
+                    FROM employee_expenses ee
+                    LEFT JOIN projects p ON ee.project_id = p.id
+                    WHERE ee.user_id = ?
+                    AND ee.created_at >= ?
+                    ORDER BY ee.created_at DESC
+                """, (user_id, start_date))
+            else:
+                cursor = conn.execute("""
+                    SELECT
+                        ee.id, ee.name, ee.amount, ee.date, ee.description,
+                        p.name as project_name
+                    FROM employee_expenses ee
+                    LEFT JOIN projects p ON ee.project_id = p.id
+                    WHERE ee.user_id = ?
+                    ORDER BY ee.created_at DESC
+                """, (user_id,))
+
+            expenses = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            return expenses
+        except Exception as e:
+            logger.error(f"Ошибка получения расходов: {e}")
+            conn.close()
+            return []
+
+    def get_user_expenses_by_month(self, user_id, start_date, end_date):
+        """Получение расходов пользователя за месяц"""
         conn = self.bot.get_db_connection()
         if not conn:
             return []
@@ -521,13 +869,14 @@ class ExpenseHandlers:
                 LEFT JOIN projects p ON ee.project_id = p.id
                 WHERE ee.user_id = ?
                 AND ee.created_at >= ?
+                AND ee.created_at < ?
                 ORDER BY ee.created_at DESC
-            """, (user_id, start_date))
+            """, (user_id, start_date, end_date))
 
             expenses = [dict(row) for row in cursor.fetchall()]
             conn.close()
             return expenses
         except Exception as e:
-            logger.error(f"Ошибка получения расходов: {e}")
+            logger.error(f"Ошибка получения расходов за месяц: {e}")
             conn.close()
             return []

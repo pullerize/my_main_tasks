@@ -43,9 +43,15 @@ SQLALCHEMY_DATABASE_URL = get_database_url()
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
     engine = create_engine(
         SQLALCHEMY_DATABASE_URL,
-        connect_args={"check_same_thread": False},
-        # Отключаем кеширование схемы
-        pool_pre_ping=True,
+        connect_args={
+            "check_same_thread": False,
+            "timeout": 30,  # Увеличен таймаут для SQLite
+        },
+        # Connection pooling для SQLite
+        pool_size=5,  # Пул из 5 подключений
+        max_overflow=10,  # До 15 одновременных подключений
+        pool_recycle=3600,  # Переиспользовать соединения каждый час
+        pool_pre_ping=True,  # Проверка жизни соединения перед использованием
         echo=False
     )
 else:
@@ -53,7 +59,8 @@ else:
         SQLALCHEMY_DATABASE_URL,
         pool_size=10,
         max_overflow=20,
-        pool_pre_ping=True
+        pool_pre_ping=True,
+        pool_recycle=3600
     )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

@@ -15,13 +15,22 @@ import tempfile
 import re
 import threading
 import time
+import logging
 from fastapi.staticfiles import StaticFiles
 
-from . import models, schemas, crud, auth
+from . import models, schemas, crud, auth, telegram_notifier
+from .models import get_local_time_utc5
 from .database import engine, Base, SessionLocal
 from .auth import get_db
 
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Create tables including new expense models
 try:
@@ -289,80 +298,113 @@ def recurring_tasks_scheduler():
     
     while True:
         try:
-            current_time = datetime.now()
-            print(f"[CRON] Recurring tasks check: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            
+            current_time = get_local_time_utc5()
+            # Убираем timezone info для корректного сравнения с naive datetime в БД
+            current_time_naive = current_time.replace(tzinfo=None)
+            logger.info(f"[CRON] Recurring tasks check: {current_time_naive.strftime('%Y-%m-%d %H:%M:%S')}")
+
             # Создаем новую сессию базы данных для планировщика
             db = SessionLocal()
             try:
                 # Проверяем все повторяющиеся задачи для отладки
                 all_recurring = db.query(models.Task).filter(models.Task.is_recurring == True).all()
-                print(f"🔍 Found {len(all_recurring)} recurring tasks:")
+                logger.info(f"🔍 Found {len(all_recurring)} recurring tasks:")
                 for task in all_recurring:
-                    print(f"   Task: {task.title}, Next run: {task.next_run_at}, Current: {current_time}")
-                    print(f"   Comparison: {task.next_run_at} <= {current_time} = {task.next_run_at <= current_time if task.next_run_at else 'None'}")
-                
+                    logger.info(f"   Task: {task.title}, Status: {task.status}, Next run: {task.next_run_at}, Current: {current_time_naive}")
+                    logger.info(f"   Comparison: {task.next_run_at} <= {current_time_naive} = {task.next_run_at <= current_time_naive if task.next_run_at else 'None'}")
+
                 # Находим задачи, которые нужно повторить
-                # Используем datetime объекты для правильного сравнения
+                # ВАЖНО: Пропускаем шаблоны со статусом 'done' или 'cancelled' (приостановленные)
+                # Автосоздание работает только для шаблонов в статусах 'new' или 'in_progress'
                 due_tasks = db.query(models.Task).filter(
                     models.Task.is_recurring == True,
-                    models.Task.next_run_at <= current_time
+                    models.Task.next_run_at <= current_time_naive,
+                    models.Task.status.in_(['new', 'in_progress'])  # Только активные шаблоны
                 ).all()
-                print(f"🔍 Query filter: next_run_at <= '{current_time}'")
-                
+                logger.info(f"🔍 Query filter: is_recurring=True, next_run_at <= '{current_time}', status IN ('new', 'in_progress')")
+
                 for template_task in due_tasks:
-                    print(f"🔄 Regenerating recurring task: {template_task.title}")
+                    logger.info(f"🔄 Creating new instance of recurring task: {template_task.title}")
+                    logger.info(f"   Template task status: {template_task.status}")
 
-                    # Сохраняем информацию о том, была ли задача завершена
-                    was_completed = template_task.status == models.TaskStatus.done
+                    # Создаем НОВУЮ задачу на основе шаблона
+                    # ВАЖНО: Явно устанавливаем status='new' (строка), а не копируем из шаблона
+                    new_task = models.Task(
+                        title=template_task.title,
+                        description=template_task.description,
+                        project=template_task.project,
+                        task_type=template_task.task_type,
+                        task_format=template_task.task_format,
+                        deadline=template_task.deadline,
+                        executor_id=template_task.executor_id,
+                        author_id=template_task.author_id,
+                        status='new',  # Явно устанавливаем строку 'new', а не enum
+                        created_at=models.get_local_time_utc5(),
+                        accepted_at=None,
+                        finished_at=None,
+                        is_recurring=False,  # Новая задача не является повторяющейся
+                        recurrence_type=None,
+                        recurrence_time=None,
+                        recurrence_days=None,
+                        next_run_at=None,
+                        overdue_count=0,
+                        resume_count=0
+                    )
+                    logger.info(f"   New task status set to: {new_task.status}")
 
-                    if was_completed:
-                        print(f"[OK] Task was completed, resetting to new status")
-                    elif template_task.status in [models.TaskStatus.new, models.TaskStatus.in_progress]:
-                        print(f"⏰ Task was not completed, incrementing overdue count")
-                        # Увеличиваем счетчик просрочек
-                        template_task.overdue_count = (template_task.overdue_count or 0) + 1
+                    db.add(new_task)
+                    logger.info(f"   After db.add, status: {new_task.status}")
+                    db.flush()  # Получаем ID новой задачи
+                    logger.info(f"   After db.flush, status: {new_task.status}")
+                    logger.info(f"[OK] Created new task instance from template: {template_task.title}")
 
-                    # Сбрасываем задачу в исходное состояние
-                    template_task.status = models.TaskStatus.new
-                    template_task.created_at = models.get_local_time_utc5()
-                    template_task.accepted_at = None
-                    template_task.finished_at = None
-                    template_task.resume_count = 0
+                    # Отправляем уведомление исполнителю о новой задаче
+                    if new_task.executor_id:
+                        executor = db.query(models.User).filter(models.User.id == new_task.executor_id).first()
+                        if executor and executor.telegram_id:
+                            task_data = {
+                                'title': new_task.title,
+                                'description': new_task.description,
+                                'project_name': new_task.project or 'Не указан',
+                                'task_type': new_task.task_type or 'Не указан',
+                                'format': new_task.task_format,
+                                'deadline_text': new_task.deadline.strftime('%d.%m.%Y %H:%M') if new_task.deadline else 'Не установлен'
+                            }
+                            telegram_notifier.send_task_notification(executor.telegram_id, new_task.id, task_data)
+                            logger.info(f"📨 Sent notification to executor {executor.name} (telegram_id: {executor.telegram_id})")
 
-                    # Обновляем next_run_at для следующего повтора
-                    template_task.next_run_at = crud.calculate_next_run_at(template_task.recurrence_type.value, db, template_task.recurrence_time, template_task.recurrence_days)
+                    # Обновляем next_run_at в шаблоне для следующего повтора
+                    template_task.next_run_at = crud.calculate_next_run_at(
+                        template_task.recurrence_type.value,
+                        db,
+                        template_task.recurrence_time,
+                        template_task.recurrence_days
+                    )
 
-                    print(f"[OK] Reset recurring task to new status: {template_task.title}, next run: {template_task.next_run_at}")
-                    if was_completed:
-                        print(f"📈 Task was completed successfully, ready for next iteration")
-                    else:
-                        print(f"[WARN] Task was overdue, count: {template_task.overdue_count}")
-                
+                    logger.info(f"[OK] Template updated, next run: {template_task.next_run_at}")
+
                 if due_tasks:
                     db.commit()
-                    print(f"[INFO] Reset {len(due_tasks)} recurring tasks to new status")
+                    logger.info(f"[INFO] Created {len(due_tasks)} new task instances from recurring templates")
                 else:
-                    print("📭 No recurring tasks due")
-                    
+                    logger.info("📭 No recurring tasks due")
+
             except Exception as e:
-                print(f"❌ Error in recurring tasks scheduler: {e}")
+                logger.error(f"❌ Error in recurring tasks scheduler: {e}")
                 db.rollback()
             finally:
                 db.close()
-                
+
         except Exception as e:
-            print(f"❌ Critical error in scheduler: {e}")
-        
+            logger.error(f"❌ Critical error in scheduler: {e}")
+
         # Проверяем каждые 5 минут
         time.sleep(30)  # Ждем 30 секунд до следующей проверки (для тестирования)
 
 # Запуск планировщика повторяющихся задач в фоновом потоке
-# ВРЕМЕННО ОТКЛЮЧЕНО из-за проблем с схемой БД
-# scheduler_thread = threading.Thread(target=recurring_tasks_scheduler, daemon=True)
-# scheduler_thread.start()
-# print("[START] Recurring tasks scheduler started")
-print("[INFO] Recurring tasks scheduler is disabled")
+scheduler_thread = threading.Thread(target=recurring_tasks_scheduler, daemon=True)
+scheduler_thread.start()
+logger.info("[START] Recurring tasks scheduler started")
 
 
 def create_default_admin():
@@ -594,6 +636,31 @@ def read_current_user(current: models.User = Depends(auth.get_current_active_use
     return current
 
 
+@app.get("/users/by-telegram/{telegram_id}")
+def get_user_by_telegram(telegram_id: int, username: str = None, db: Session = Depends(auth.get_db)):
+    """Получить пользователя по Telegram ID или username (для бота)"""
+    # Сначала ищем по telegram_id
+    user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
+
+    # Если не найден и передан username, ищем по telegram_username
+    if not user and username:
+        user = db.query(models.User).filter(
+            models.User.telegram_username == username,
+            models.User.telegram_id == None
+        ).first()
+
+        # Если найден, обновляем telegram_id
+        if user:
+            user.telegram_id = telegram_id
+            db.commit()
+            db.refresh(user)
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
+
+
 @app.get("/users/me/stats", response_model=schemas.UserStats)
 def read_current_user_stats(db: Session = Depends(auth.get_db), current: models.User = Depends(auth.get_current_active_user)):
     stats = crud.get_user_statistics(db, current.id)
@@ -807,7 +874,41 @@ def read_all_tasks(skip: int = 0, limit: int = 10000, db: Session = Depends(auth
 
 @app.post("/tasks/", response_model=schemas.Task)
 def create_task(task: schemas.TaskCreate, db: Session = Depends(auth.get_db), current: models.User = Depends(auth.get_current_active_user)):
-    return crud.create_task(db, task, author_id=current.id)
+    # Создаем задачу
+    created_task = crud.create_task(db, task, author_id=current.id)
+
+    # Отправляем уведомление только для обычных задач, НЕ для шаблонов повторяющихся задач
+    # Для шаблонов (is_recurring=True) уведомления будут отправляться только при автосоздании экземпляров
+    if created_task.executor_id and not created_task.is_recurring:
+        executor = db.query(models.User).filter(models.User.id == created_task.executor_id).first()
+        if executor and executor.telegram_id:
+            # Получаем название проекта
+            project_name = "Не указан"
+            if created_task.project:
+                project = db.query(models.Project).filter(models.Project.name == created_task.project).first()
+                if project:
+                    project_name = project.name
+
+            # Форматируем дедлайн
+            deadline_text = "Не установлен"
+            if created_task.deadline:
+                deadline_text = created_task.deadline.strftime("%d.%m.%Y %H:%M")
+
+            # Отправляем уведомление
+            telegram_notifier.send_task_notification(
+                executor_telegram_id=executor.telegram_id,
+                task_id=created_task.id,
+                task_data={
+                    'title': created_task.title,
+                    'description': created_task.description,
+                    'project_name': project_name,
+                    'task_type': created_task.task_type or 'Не указан',
+                    'format': created_task.task_format,
+                    'deadline_text': deadline_text
+                }
+            )
+
+    return created_task
 
 
 @app.put("/tasks/{task_id}", response_model=schemas.Task)
@@ -959,10 +1060,9 @@ def update_task_priority(
 @app.get("/tasks/types")
 def get_task_types(
     role: str = None,
-    db: Session = Depends(auth.get_db),
-    current: models.User = Depends(auth.get_current_active_user)
+    db: Session = Depends(auth.get_db)
 ):
-    """Получить типы задач по роли"""
+    """Получить типы задач по роли (публичный эндпоинт для бота)"""
     task_types = {
         'designer': [
             {'name': 'Motion', 'icon': '🎞️'},
@@ -1022,10 +1122,9 @@ def get_task_types(
 
 @app.get("/tasks/formats")
 def get_task_formats(
-    db: Session = Depends(auth.get_db),
-    current: models.User = Depends(auth.get_current_active_user)
+    db: Session = Depends(auth.get_db)
 ):
-    """Получить форматы задач для дизайнеров"""
+    """Получить форматы задач для дизайнеров (публичный эндпоинт для бота)"""
     return [
         {'name': '9:16', 'icon': '📱'},
         {'name': '1:1', 'icon': '🔲'},
@@ -2651,21 +2750,41 @@ async def import_database(
 
             print(f"Создаем маппинг пользователей: {len(user_rows)} пользователей")
 
+            # Маппинг устаревших ролей на актуальные
+            role_mapping = {
+                'digital': 'admin',  # Устаревшая роль digital -> admin
+            }
+
             for user_row in user_rows:
                 user_data = dict(zip(user_columns, user_row))
                 old_user_id = user_data.get('id')
                 username = user_data.get('telegram_username') or user_data.get('login')
 
                 if old_user_id and username:
-                    # Ищем пользователя в текущей БД по username
-                    existing_user = db.query(models.User).filter(models.User.telegram_username == username).first()
-                    if existing_user:
-                        user_mapping[old_user_id] = existing_user.id
-                        print(f"Маппинг пользователя: {old_user_id} -> {existing_user.id} ({username})")
+                    # Используем прямой SQL запрос для проверки существования пользователя
+                    # Это избегает проблем с десериализацией enum в SQLAlchemy
+                    result = db.execute(
+                        text("SELECT id FROM users WHERE telegram_username = :username"),
+                        {"username": username}
+                    ).fetchone()
+
+                    if result:
+                        existing_user_id = result[0]
+                        user_mapping[old_user_id] = existing_user_id
+                        print(f"Маппинг пользователя: {old_user_id} -> {existing_user_id} ({username})")
                     else:
                         # Создаем недостающего пользователя
                         user_name = user_data.get('name', username)
                         user_role = user_data.get('role', 'designer')
+
+                        # Преобразуем устаревшие роли
+                        user_role = role_mapping.get(user_role, user_role)
+
+                        # Проверяем, что роль допустима
+                        valid_roles = ['designer', 'smm_manager', 'admin', 'inactive']
+                        if user_role not in valid_roles:
+                            print(f"[WARN] Недопустимая роль '{user_role}' для пользователя {username}, используем 'designer'")
+                            user_role = 'designer'
 
                         new_user = models.User(
                             telegram_username=username,
@@ -2786,6 +2905,18 @@ async def import_database(
 
                             # ВАЖНО: При импорте из экспорта приложения сохраняем проект КАК ЕСТЬ
                             # Не применяем фильтрацию по 15 проектам
+
+                            # Парсим next_run_at для повторяющихся задач
+                            next_run_at = None
+                            if task_data.get('next_run_at'):
+                                try:
+                                    if isinstance(task_data['next_run_at'], str):
+                                        next_run_at = datetime.fromisoformat(task_data['next_run_at'].replace(' ', 'T'))
+                                    else:
+                                        next_run_at = task_data['next_run_at']
+                                except:
+                                    next_run_at = None
+
                             new_task = models.Task(
                                 title=task_data['title'],
                                 description=task_data.get('description', ''),
@@ -2798,11 +2929,21 @@ async def import_database(
                                 author_id=author_id,
                                 executor_id=executor_id,
                                 finished_at=finished_at,
-                                created_at=created_at
+                                created_at=created_at,
+                                # Поля для повторяющихся задач
+                                is_recurring=bool(task_data.get('is_recurring', False)),
+                                recurrence_type=task_data.get('recurrence_type'),
+                                recurrence_time=task_data.get('recurrence_time'),
+                                recurrence_days=task_data.get('recurrence_days'),
+                                next_run_at=next_run_at,
+                                original_task_id=task_data.get('original_task_id'),
+                                resume_count=task_data.get('resume_count', 0),
+                                overdue_count=task_data.get('overdue_count', 0)
                             )
                             db.add(new_task)
                             imported_data["tasks"] += 1
-                            print(f"Создана задача: '{task_data['title']}' автор_id={author_id}, исполнитель_id={executor_id}")
+                            recurring_status = f" [ПОВТОРЯЮЩАЯСЯ: {task_data.get('recurrence_type')}]" if task_data.get('is_recurring') else ""
+                            print(f"Создана задача: '{task_data['title']}' автор_id={author_id}, исполнитель_id={executor_id}{recurring_status}")
                         else:
                             print(f"Задача уже существует: '{task_data['title']}'")
                     else:
@@ -3498,10 +3639,14 @@ async def import_database(
 
         # Сохраняем изменения
         db.commit()
-        
+
         # Закрываем сессию источника
         source_session.close()
-        
+
+        # Подсчитываем повторяющиеся задачи
+        recurring_tasks_count = db.query(models.Task).filter(models.Task.is_recurring == True).count()
+        print(f"📋 Всего повторяющихся задач в БД: {recurring_tasks_count}")
+
         # Update database version after successful import
         try:
             # Create or update database version record
@@ -3526,7 +3671,8 @@ async def import_database(
             "message": "Database imported successfully",
             "imported": imported_data,
             "available_tables": available_tables,
-            "database_version": version_timestamp
+            "database_version": version_timestamp,
+            "recurring_tasks_count": recurring_tasks_count
         }
         
     except Exception as e:
@@ -4075,6 +4221,10 @@ async def clear_database(
 
         deleted_counts["files"] = cleared_files
 
+        # Удаляем налоги
+        if hasattr(models, 'Tax'):
+            db.query(models.Tax).delete()
+
         # Сохраняем изменения
         db.commit()
 
@@ -4091,6 +4241,9 @@ async def clear_database(
         }
 
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Clear database failed: {error_details}")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Clear failed: {str(e)}")
 
@@ -4727,10 +4880,12 @@ def get_employee_expenses(
     user_id: Optional[int] = Query(None),
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
+    all_users: bool = Query(False, description="Get expenses for all users (admin only)"),
     db: Session = Depends(auth.get_db),
     current: models.User = Depends(auth.get_current_active_user)
 ):
     """Get employee expenses with filters"""
+    print(f"[DEBUG /employee-expenses] user_id={user_id}, start_date={start_date}, end_date={end_date}, all_users={all_users}")
     from sqlalchemy.orm import joinedload
 
     query = db.query(models.EmployeeExpense).options(
@@ -4740,10 +4895,12 @@ def get_employee_expenses(
 
     if user_id:
         query = query.filter(models.EmployeeExpense.user_id == user_id)
+    elif all_users and current.role == models.RoleEnum.admin:
+        # Admin can request all users' expenses for reports
+        pass
     else:
-        # If not admin, show only own expenses
-        if current.role != models.RoleEnum.admin:
-            query = query.filter(models.EmployeeExpense.user_id == current.id)
+        # Always show only current user's own expenses when user_id is not specified
+        query = query.filter(models.EmployeeExpense.user_id == current.id)
 
     if start_date:
         query = query.filter(models.EmployeeExpense.date >= start_date)
@@ -4980,11 +5137,14 @@ def get_operator_expense_report(
 @app.get("/expense-reports/projects")
 def get_project_expenses_summary(
     project_id: Optional[int] = Query(None, description="Filter by project ID"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     db: Session = Depends(auth.get_db),
     current: models.User = Depends(auth.get_current_active_user)
 ):
     """Get project expenses summary including all types of expenses per project"""
-    return crud.get_project_expenses_summary(db, project_id)
+    print(f"[DEBUG /expense-reports/projects] project_id={project_id}, start_date={start_date}, end_date={end_date}")
+    return crud.get_project_expenses_summary(db, project_id, start_date, end_date)
 
 
 # ========== UPDATE OPERATOR ENDPOINT ==========
@@ -5037,33 +5197,8 @@ async def get_all_settings(db: Session = Depends(get_db)):
 
 
 # ========== RECURRING TASKS SETTINGS ==========
-@app.get("/api/recurring-tasks/generation-time")
-def get_recurring_task_generation_time(
-    db: Session = Depends(auth.get_db),
-    current: models.User = Depends(auth.get_current_active_user)
-):
-    """Получить время генерации повторяющихся задач"""
-    generation_time = crud.get_setting(db, 'recurring_task_generation_time', '11:19')
-    return {"generation_time": generation_time}
-
-
-@app.put("/api/recurring-tasks/generation-time")
-def set_recurring_task_generation_time(
-    generation_time: str = Body(..., embed=True),
-    db: Session = Depends(auth.get_db),
-    current: models.User = Depends(auth.get_current_admin_user)
-):
-    """Установить время генерации повторяющихся задач (только для админов)"""
-    import re
-    # Валидация времени в формате HH:MM
-    if not re.match(r'^([01]?[0-9]|2[0-3]):[0-5][0-9]$', generation_time):
-        raise HTTPException(status_code=400, detail="Invalid time format. Use HH:MM format (e.g., 11:19)")
-    
-    crud.set_setting(db, 'recurring_task_generation_time', generation_time)
-    return {
-        "generation_time": generation_time,
-        "message": f"Время генерации повторяющихся задач установлено на {generation_time}"
-    }
+# Удалено: глобальная настройка времени генерации
+# Время генерации теперь устанавливается индивидуально для каждой задачи
 
 
 # =============================================================================

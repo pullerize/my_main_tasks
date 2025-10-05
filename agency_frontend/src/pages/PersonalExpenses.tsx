@@ -55,10 +55,22 @@ function PersonalExpenses() {
   const [description, setDescription] = useState('')
   const [date, setDate] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
-  
+  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1) // Current month by default
+
   const token = localStorage.getItem('token')
   const role = localStorage.getItem('role')
   const userIsAdmin = isAdmin(role)
+
+  // Helper functions for date filtering
+  const getMonthDateRange = (month: number) => {
+    const year = new Date().getFullYear()
+    const monthStr = String(month).padStart(2, '0')
+    const lastDay = new Date(year, month, 0).getDate()
+    return {
+      start_date: `${year}-${monthStr}-01`,
+      end_date: `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`
+    }
+  }
 
   const loadExpenses = async () => {
     if (!token) {
@@ -67,7 +79,12 @@ function PersonalExpenses() {
     }
 
     try {
-      const res = await fetch(`${API_URL}/employee-expenses/`, {
+      const dateRange = getMonthDateRange(selectedMonth)
+      const params = new URLSearchParams()
+      params.append('start_date', dateRange.start_date)
+      params.append('end_date', dateRange.end_date)
+
+      const res = await fetch(`${API_URL}/employee-expenses/?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (res.ok) {
@@ -88,7 +105,12 @@ function PersonalExpenses() {
     }
 
     try {
-      const res = await fetch(`${API_URL}/common-expenses/`, {
+      const dateRange = getMonthDateRange(selectedMonth)
+      const params = new URLSearchParams()
+      params.append('start_date', dateRange.start_date)
+      params.append('end_date', dateRange.end_date)
+
+      const res = await fetch(`${API_URL}/common-expenses/?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (res.ok) {
@@ -130,6 +152,10 @@ function PersonalExpenses() {
     if (userIsAdmin) {
       loadCompanyExpenses()
     }
+  }, [selectedMonth])
+
+  useEffect(() => {
+    loadProjects()
   }, [])
 
   const openAddModal = () => {
@@ -282,6 +308,34 @@ function PersonalExpenses() {
             </div>
           </div>
         )}
+
+        {/* Month Filter */}
+        <div className="mb-6 flex flex-wrap gap-2">
+          <select
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(Number(e.target.value))}
+            className="px-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-sm font-medium text-gray-700 shadow-sm"
+          >
+            <option value={1}>Январь</option>
+            <option value={2}>Февраль</option>
+            <option value={3}>Март</option>
+            <option value={4}>Апрель</option>
+            <option value={5}>Май</option>
+            <option value={6}>Июнь</option>
+            <option value={7}>Июль</option>
+            <option value={8}>Август</option>
+            <option value={9}>Сентябрь</option>
+            <option value={10}>Октябрь</option>
+            <option value={11}>Ноябрь</option>
+            <option value={12}>Декабрь</option>
+          </select>
+          <button
+            onClick={() => setSelectedMonth(new Date().getMonth() + 1)}
+            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium"
+          >
+            Текущий месяц
+          </button>
+        </div>
 
         {/* Summary Card */}
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-8 shadow-sm">

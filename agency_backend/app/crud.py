@@ -26,20 +26,17 @@ def set_setting(db: Session, key: str, value: str):
 
 def calculate_next_run_at(recurrence_type: str, db: Session = None, generation_time: str = None, recurrence_days: str = None) -> datetime:
     """Рассчитывает следующее время запуска для повторяющихся задач"""
-    base_date = datetime.now()
+    base_date = get_local_time_utc5()
     
-    # Получаем время генерации
-    target_time = generation_time
-    if not target_time and db:
-        target_time = get_setting(db, 'recurring_task_generation_time', '11:19')
-    
+    # Получаем время генерации (теперь обязательно должно быть передано при создании задачи)
+    if not generation_time:
+        raise ValueError("generation_time is required for recurring tasks")
+
     # Парсим время
-    target_hour, target_minute = 11, 19  # значение по умолчанию
-    if target_time:
-        try:
-            target_hour, target_minute = map(int, target_time.split(':'))
-        except (ValueError, AttributeError):
-            pass
+    try:
+        target_hour, target_minute = map(int, generation_time.split(':'))
+    except (ValueError, AttributeError):
+        raise ValueError(f"Invalid generation_time format: {generation_time}. Expected HH:MM")
     
     # Парсим дни
     allowed_days = []
@@ -512,13 +509,15 @@ def update_task(db: Session, task_id: int, data: schemas.TaskCreate) -> Optional
         task.recurrence_time = data.recurrence_time
     if data.recurrence_days is not None:
         task.recurrence_days = data.recurrence_days
-        
-        # Пересчитываем next_run_at если изменился тип повторения, время или дни
-        if task.is_recurring and task.recurrence_type:
-            task.next_run_at = calculate_next_run_at(task.recurrence_type, db, task.recurrence_time, task.recurrence_days)
-        else:
-            task.next_run_at = None
-    
+
+    # Пересчитываем next_run_at если задача повторяющаяся и все данные заполнены
+    # ВАЖНО: не обнуляем next_run_at для шаблонов, чтобы автогенерация продолжала работать
+    if task.is_recurring and task.recurrence_type and task.recurrence_time:
+        task.next_run_at = calculate_next_run_at(task.recurrence_type, db, task.recurrence_time, task.recurrence_days)
+    elif not task.is_recurring:
+        # Обнуляем next_run_at только если задача больше не повторяющаяся
+        task.next_run_at = None
+
     db.commit()
     db.refresh(task)
     return task
@@ -1134,9 +1133,17 @@ def get_expenses_report(
     q = db.query(models.ProjectExpense)
     if project_id:
         q = q.filter(models.ProjectExpense.project_id == project_id)
-    q = q.filter(models.ProjectExpense.created_at >= start).filter(models.ProjectExpense.created_at < end)
+    q = q.filter(models.ProjectExpense.date >= start.date()).filter(models.ProjectExpense.date < end.date())
     rows: dict[str, list[float]] = {}
     for e in q.all():
+        rows.setdefault(e.name, []).append(e.amount)
+
+    # Include employee expenses
+    emp_q = db.query(models.EmployeeExpense)
+    if project_id:
+        emp_q = emp_q.filter(models.EmployeeExpense.project_id == project_id)
+    emp_q = emp_q.filter(models.EmployeeExpense.date >= start.date()).filter(models.EmployeeExpense.date < end.date())
+    for e in emp_q.all():
         rows.setdefault(e.name, []).append(e.amount)
 
     # include completed shootings cost
@@ -2410,9 +2417,10 @@ def get_service_types_analytics(
 # Расходы по проектам - агрегированная аналитика
 # =============================================================================
 
-def get_project_expenses_summary(db: Session, project_id: int = None):
+def get_project_expenses_summary(db: Session, project_id: int = None, start_date: str = None, end_date: str = None):
     """Получить сводку расходов по проектам"""
     from sqlalchemy import func
+    from datetime import datetime
 
     # Базовый запрос проектов
     projects_query = db.query(models.Project)
@@ -2424,14 +2432,28 @@ def get_project_expenses_summary(db: Session, project_id: int = None):
 
     for project in projects:
         # Затраты на проект (из project_expenses)
-        project_costs = db.query(func.sum(models.ProjectExpense.amount)).filter(
+        project_costs_query = db.query(func.sum(models.ProjectExpense.amount)).filter(
             models.ProjectExpense.project_id == project.id
-        ).scalar() or 0
+        )
+        if start_date:
+            start_date_obj = datetime.fromisoformat(start_date).date()
+            project_costs_query = project_costs_query.filter(models.ProjectExpense.date >= start_date_obj)
+        if end_date:
+            end_date_obj = datetime.fromisoformat(end_date).date()
+            project_costs_query = project_costs_query.filter(models.ProjectExpense.date <= end_date_obj)
+        project_costs = project_costs_query.scalar() or 0
 
         # Расходы сотрудников на проект (из employee_expenses с project_id)
-        employee_expenses = db.query(func.sum(models.EmployeeExpense.amount)).filter(
+        employee_expenses_query = db.query(func.sum(models.EmployeeExpense.amount)).filter(
             models.EmployeeExpense.project_id == project.id
-        ).scalar() or 0
+        )
+        if start_date:
+            start_date_obj = datetime.fromisoformat(start_date).date()
+            employee_expenses_query = employee_expenses_query.filter(models.EmployeeExpense.date >= start_date_obj)
+        if end_date:
+            end_date_obj = datetime.fromisoformat(end_date).date()
+            employee_expenses_query = employee_expenses_query.filter(models.EmployeeExpense.date <= end_date_obj)
+        employee_expenses = employee_expenses_query.scalar() or 0
 
         # Расходы операторов (из calendar событий съемок для проекта)
         # Пока оставим как 0, так как нужна дополнительная логика для календаря

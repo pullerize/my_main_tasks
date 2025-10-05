@@ -1,26 +1,67 @@
-# Python
+# ==================== Python ====================
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.db
+*.pyw
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
 venv/
-logs/
-*.log
+ENV/
+env/
 
-# Node
+# ==================== Database ====================
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+backups/
+
+# ==================== Logs ====================
+*.log
+logs/
+*.log.*
+
+# ==================== Node / Frontend ====================
 node_modules/
 dist/
+build/
+.npm
+.eslintcache
 
-# Env files (секреты)
+# ==================== Environment Files ====================
 .env
 .env.local
 .env.production
-# Добавим игнорирование для Python кеша и тестовых файлов
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
+.env.*.local
+
+# ==================== IDE / Editors ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ==================== Temporary Files ====================
+*.tmp
+*.temp
+*.bak
+*.backup
+.cache/
+
+# ==================== Uploads / Media ====================
+agency_backend/uploads/
+agency_backend/files/
+agency_backend/contracts/
+agency_backend/static/projects/
+agency_backend/static/digital/
+
+# ==================== Development ====================
 test_*.py
 debug_*.py
+scratch.*

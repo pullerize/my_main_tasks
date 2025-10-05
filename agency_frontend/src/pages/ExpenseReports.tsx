@@ -119,12 +119,14 @@ interface Project {
 }
 
 const ExpenseReports: React.FC = () => {
+  console.log('=== ExpenseReports component mounted ===');
   const [summary, setSummary] = useState<ExpenseReportSummary | null>(null);
   const [employeeReports, setEmployeeReports] = useState<EmployeeExpenseReport[]>([]);
   const [operatorReports, setOperatorReports] = useState<OperatorExpenseReport[]>([]);
   const [projectExpenseReports, setProjectExpenseReports] = useState<ProjectExpenseReport[]>([]);
   const [projectExpenseSummary, setProjectExpenseSummary] = useState<ProjectExpenseSummary[]>([]);
   const [employeeExpensesWithProject, setEmployeeExpensesWithProject] = useState<EmployeeExpense[]>([]);
+  const [employeeExpensesWithoutProject, setEmployeeExpensesWithoutProject] = useState<EmployeeExpense[]>([]);
   const [commonExpenses, setCommonExpenses] = useState<CommonExpense[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -225,11 +227,12 @@ const ExpenseReports: React.FC = () => {
 
   useEffect(() => {
     loadInitialData();
+    loadReports(); // Load reports on mount
   }, []);
 
   useEffect(() => {
     loadReports();
-  }, [filters, selectedProject]);
+  }, [filters, selectedProject, activeTab]); // Added activeTab to dependencies
 
   const loadInitialData = async () => {
     try {
@@ -246,6 +249,7 @@ const ExpenseReports: React.FC = () => {
   };
 
   const loadReports = async () => {
+    console.log('[DEBUG] loadReports called, activeTab:', activeTab);
     setLoading(true);
     try {
       const queryParams = new URLSearchParams();
@@ -258,41 +262,78 @@ const ExpenseReports: React.FC = () => {
       if (filters.end_date) projectQueryParams.append('end_date', filters.end_date);
       projectQueryParams.append('limit', '1000');
 
-      const [summaryRes, employeesRes, operatorsRes, projectExpensesRes, projectSummaryRes, employeeExpensesRes, commonExpensesRes, projectsRes] = await Promise.all([
+      // Build query params for project summary with dates
+      const projectSummaryParams = new URLSearchParams();
+      if (selectedProject) projectSummaryParams.append('project_id', String(selectedProject));
+      if (filters.start_date) projectSummaryParams.append('start_date', filters.start_date);
+      if (filters.end_date) projectSummaryParams.append('end_date', filters.end_date);
+      console.log('[DEBUG] Project summary params:', projectSummaryParams.toString(), 'filters:', filters);
+
+      // Build query params for employee expenses - ALWAYS fetch all with all_users=true
+      const employeeExpensesParams = new URLSearchParams();
+      employeeExpensesParams.append('all_users', 'true'); // Get all users' expenses for reports
+      // Don't add date filters here - we want all expenses for the general tab
+      console.log('[DEBUG] Employee expenses params:', employeeExpensesParams.toString());
+      console.log('[DEBUG] About to fetch:', `${API_URL}/employee-expenses/?${employeeExpensesParams}`);
+
+      console.log('[DEBUG] Building requests array...');
+      const requests = [
         authFetch(`${API_URL}/expense-reports/summary?${queryParams}`),
         authFetch(`${API_URL}/expense-reports/employees?${queryParams}`),
         authFetch(`${API_URL}/expense-reports/operators?${queryParams}`),
-        authFetch(`${API_URL}/project-expenses/detailed?${projectQueryParams}`),
-        authFetch(`${API_URL}/expense-reports/projects${selectedProject ? `?project_id=${selectedProject}` : ''}`),
-        authFetch(`${API_URL}/employee-expenses`),
+        authFetch(`${API_URL}/employee-expenses/?${employeeExpensesParams}`),
         authFetch(`${API_URL}/common-expenses/?${queryParams}&limit=1000`),
         authFetch(`${API_URL}/projects`)
-      ]);
+      ];
+      console.log('[DEBUG] Requests array length:', requests.length);
 
-      setSummary(await summaryRes.json());
-      setEmployeeReports(await employeesRes.json());
-      setOperatorReports(await operatorsRes.json());
-      const commonExpensesData = await commonExpensesRes.json();
+      // Only fetch project-specific data if on project-expenses tab
+      if (activeTab === 'project-expenses') {
+        requests.push(
+          authFetch(`${API_URL}/project-expenses/detailed?${projectQueryParams}`),
+          authFetch(`${API_URL}/expense-reports/projects?${projectSummaryParams}`)
+        );
+      }
+
+      const responses = await Promise.all(requests);
+
+      setSummary(await responses[0].json());
+      setEmployeeReports(await responses[1].json());
+      setOperatorReports(await responses[2].json());
+
+      // Employee expenses
+      const employeeExpensesData = await responses[3].json();
+      console.log('[DEBUG] Employee expenses data received from backend:', employeeExpensesData.length, 'items');
+      console.log('[DEBUG] First few items:', employeeExpensesData.slice(0, 3));
+
+      const commonExpensesData = await responses[4].json();
       console.log('Common expenses data:', commonExpensesData);
       setCommonExpenses(commonExpensesData);
 
-      // Group project expenses by project
-      const projectExpensesData = await projectExpensesRes.json();
-      const groupedProjectExpenses = groupProjectExpensesByProject(projectExpensesData);
-      setProjectExpenseReports(groupedProjectExpenses);
-
-      // Set project expense summary
-      setProjectExpenseSummary(await projectSummaryRes.json());
-
-      // Set employee expenses with project info
-      const employeeExpensesData = await employeeExpensesRes.json();
-      console.log('Employee expenses data:', employeeExpensesData);
-      setEmployeeExpensesWithProject(employeeExpensesData.filter((expense: EmployeeExpense) =>
-        selectedProject ? expense.project_id === selectedProject : expense.project_id
-      ));
-
       // Set projects
-      setProjects(await projectsRes.json());
+      setProjects(await responses[5].json());
+
+      // Handle project-specific data
+      if (activeTab === 'project-expenses' && responses.length > 6) {
+        const projectExpensesData = await responses[6].json();
+        const groupedProjectExpenses = groupProjectExpensesByProject(projectExpensesData);
+        setProjectExpenseReports(groupedProjectExpenses);
+        setProjectExpenseSummary(await responses[7].json());
+      }
+
+      // Split employee expenses into two groups: with project and without project
+      // For "with project" - apply selectedProject filter if set
+      const withProject = employeeExpensesData.filter((expense: EmployeeExpense) =>
+        selectedProject ? expense.project_id === selectedProject : expense.project_id
+      );
+      // For "without project" - always show all expenses without project_id (no filter)
+      const withoutProject = employeeExpensesData.filter((expense: EmployeeExpense) => !expense.project_id);
+
+      console.log('[DEBUG] With project filter (selectedProject=' + selectedProject + '):', withProject.length, 'items');
+      console.log('[DEBUG] Without project (all):', withoutProject.length, 'items');
+      setEmployeeExpensesWithProject(withProject);
+      setEmployeeExpensesWithoutProject(withoutProject);
+
     } catch (error) {
       console.error('Failed to load reports:', error);
     } finally {
@@ -312,6 +353,7 @@ const ExpenseReports: React.FC = () => {
   };
 
   const setDateFilter = (dates: { start_date: string; end_date: string }) => {
+    console.log('[DEBUG] setDateFilter called with:', dates);
     setFilters(dates);
   };
 
@@ -921,90 +963,168 @@ const ExpenseReports: React.FC = () => {
         )}
 
         {activeTab === 'general-expenses' && (
-          <div className="bg-white rounded-lg shadow-sm p-6">
-            <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2 mb-6">
-              <span className="text-orange-500">🏢</span>
-              Общие расходы организации ({commonExpenses.length})
-            </h2>
-            <div className="mb-4 text-xs text-gray-500">
-              Debug: commonExpenses.length = {commonExpenses.length}<br/>
-              Debug: loading = {loading.toString()}
+          <div className="space-y-6">
+            {/* Common Expenses */}
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2 mb-6">
+                <span className="text-orange-500">🏢</span>
+                Общие расходы организации ({commonExpenses.length})
+              </h2>
+
+              <div className="overflow-x-auto">
+                <table className="w-full table-auto">
+                  <thead>
+                    <tr className="bg-gray-50">
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Дата</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Название</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Категория</th>
+                      <th className="px-4 py-3 text-right text-sm font-medium text-gray-900">Сумма</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Описание</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Создал</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {commonExpenses.map((expense) => (
+                      <tr
+                        key={expense.id}
+                        className="hover:bg-blue-50 cursor-pointer transition-colors"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          console.log('Common expense clicked:', expense);
+                          handleExpenseClick(expense, 'common');
+                        }}
+                      >
+                        <td className="px-4 py-3">
+                          <span className="text-sm">
+                            {new Date(expense.date).toLocaleDateString('ru-RU')}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <Building className="h-4 w-4 text-gray-500" />
+                            <span className="font-medium text-gray-900">
+                              {expense.name}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
+                            {expense.category_name || 'Без категории'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="font-semibold text-gray-900">
+                            {formatNumber(expense.amount)} сум
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="max-w-xs">
+                            {expense.description ? (
+                              <span className="text-sm text-gray-600 truncate" title={expense.description}>
+                                {expense.description}
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-400">-</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-sm text-gray-600">
+                            {expense.creator_name || 'Неизвестно'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {commonExpenses.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                          Нет данных об общих расходах организации
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full table-auto">
-                <thead>
-                  <tr className="bg-gray-50">
-                    <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Дата</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Название</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Категория</th>
-                    <th className="px-4 py-3 text-right text-sm font-medium text-gray-900">Сумма</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Описание</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Создал</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {commonExpenses.map((expense) => (
-                    <tr
-                      key={expense.id}
-                      className="hover:bg-blue-50 cursor-pointer transition-colors"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        console.log('Common expense clicked:', expense);
-                        handleExpenseClick(expense, 'common');
-                      }}
-                    >
-                      <td className="px-4 py-3">
-                        <span className="text-sm">
-                          {new Date(expense.date).toLocaleDateString('ru-RU')}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <Building className="h-4 w-4 text-gray-500" />
+            {/* Employee Expenses Without Project */}
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2 mb-6">
+                <span className="text-blue-500">👥</span>
+                Расходы сотрудников без привязки к проектам ({employeeExpensesWithoutProject.length})
+              </h2>
+              <div className="mb-4 text-xs text-gray-500">
+                Debug: employeeExpensesWithoutProject.length = {employeeExpensesWithoutProject.length}<br/>
+                Debug: First item: {JSON.stringify(employeeExpensesWithoutProject[0])}<br/>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full table-auto">
+                  <thead>
+                    <tr className="bg-gray-50">
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Дата</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Название</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Сотрудник</th>
+                      <th className="px-4 py-3 text-right text-sm font-medium text-gray-900">Сумма</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-900">Описание</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {employeeExpensesWithoutProject.map((expense) => (
+                      <tr
+                        key={expense.id}
+                        className="hover:bg-blue-50 cursor-pointer transition-colors"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          console.log('Employee expense clicked:', expense);
+                          handleExpenseClick(expense, 'employee');
+                        }}
+                      >
+                        <td className="px-4 py-3">
+                          <span className="text-sm">
+                            {new Date(expense.date).toLocaleDateString('ru-RU')}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
                           <span className="font-medium text-gray-900">
                             {expense.name}
                           </span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
-                          {expense.category_name || 'Без категории'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="font-semibold text-gray-900">
-                          {formatNumber(expense.amount)} сум
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="max-w-xs">
-                          {expense.description ? (
-                            <span className="text-sm text-gray-600 truncate" title={expense.description}>
-                              {expense.description}
-                            </span>
-                          ) : (
-                            <span className="text-sm text-gray-400">-</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="text-sm text-gray-600">
-                          {expense.creator_name || 'Неизвестно'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                  {commonExpenses.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
-                        Нет данных о расходах организации
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-sm text-gray-600">
+                            {expense.user?.name || 'Неизвестно'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="font-semibold text-gray-900">
+                            {formatNumber(expense.amount)} сум
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="max-w-xs">
+                            {expense.description ? (
+                              <span className="text-sm text-gray-600 truncate" title={expense.description}>
+                                {expense.description}
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-400">-</span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {employeeExpensesWithoutProject.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                          Нет расходов сотрудников без привязки к проектам
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}

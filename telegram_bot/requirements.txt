@@ -1,5 +1,12 @@
-python-telegram-bot==20.7
-python-dotenv==1.0.0
-sqlalchemy==2.0.23
-requests==2.31.0
-nest-asyncio==1.5.8
+# ==================== Telegram Bot ====================
+python-telegram-bot>=20.7
+
+# ==================== Database ====================
+sqlalchemy>=2.0.0
+
+# ==================== Configuration ====================
+python-dotenv>=1.0.0
+
+# ==================== Utilities ====================
+requests>=2.31.0
+nest-asyncio>=1.5.8
