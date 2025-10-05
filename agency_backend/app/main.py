@@ -541,6 +541,17 @@ os.makedirs("static", exist_ok=True)
 
 app = FastAPI(title="8BIT Codex API", version="1.0.0")
 
+# Глобальный словарь для отслеживания статуса импорта
+import_status = {
+    "is_running": False,
+    "progress": 0,
+    "message": "Нет активных операций",
+    "imported_data": {},
+    "error": None,
+    "started_at": None,
+    "completed_at": None
+}
+
 # Mount static files
 try:
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -2156,6 +2167,17 @@ def health_check(db: Session = Depends(auth.get_db)):
         }
 
 
+@app.get("/admin/import-status")
+async def get_import_status(
+    current: models.User = Depends(auth.get_current_active_user),
+):
+    """Получить статус текущего импорта"""
+    if current.role != models.RoleEnum.admin:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
+    return import_status
+
+
 @app.post("/admin/import-database")
 async def import_database(
     file: UploadFile = File(...),
@@ -2163,40 +2185,100 @@ async def import_database(
     db: Session = Depends(auth.get_db),
     current: models.User = Depends(auth.get_current_active_user),
 ):
-    """Импорт данных из загруженной БД с файлами"""
+    """Импорт данных из загруженной БД с файлами (асинхронный запуск)"""
     if current.role != models.RoleEnum.admin:
         raise HTTPException(status_code=403, detail="Not enough permissions")
+
+    # Проверяем, не запущен ли уже импорт
+    if import_status["is_running"]:
+        raise HTTPException(status_code=409, detail="Import is already running")
 
     if not file.filename or not (file.filename.endswith('.db') or file.filename.endswith('.zip')):
         raise HTTPException(status_code=400, detail="Only .db or .zip files are allowed")
 
     import zipfile
 
-    # Сохраняем текущую рабочую директорию и переходим в agency_backend
+    # Сохраняем файл и запускаем импорт в фоновом потоке
     original_cwd = os.getcwd()
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    backend_dir = os.path.dirname(app_dir)
 
-    # Определяем папку agency_backend
-    app_dir = os.path.dirname(os.path.abspath(__file__))  # Папка app
-    backend_dir = os.path.dirname(app_dir)  # Папка agency_backend
+    # Сохраняем загруженный файл во временную директорию
+    tmp_upload_path = None
+    tmp_dir = None
 
-    print(f"Импорт: текущая директория: {original_cwd}")
-    print(f"Импорт: переходим в: {backend_dir}")
+    if file.filename.endswith('.zip'):
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
+            shutil.copyfileobj(file.file, tmp_zip)
+            tmp_upload_path = tmp_zip.name
+    else:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp_file:
+            shutil.copyfileobj(file.file, tmp_file)
+            tmp_upload_path = tmp_file.name
+
+    # Сбрасываем статус и запускаем фоновую задачу
+    import_status["is_running"] = True
+    import_status["progress"] = 0
+    import_status["message"] = "Начинается импорт..."
+    import_status["imported_data"] = {}
+    import_status["error"] = None
+    import_status["started_at"] = datetime.utcnow().isoformat()
+    import_status["completed_at"] = None
+
+    # Запускаем импорт в отдельном потоке
+    def run_import_in_background():
+        db_session = SessionLocal()
+        try:
+            perform_database_import(
+                tmp_upload_path,
+                filter_by_roles,
+                db_session,
+                backend_dir,
+                original_cwd
+            )
+        except Exception as e:
+            import_status["error"] = str(e)
+            import_status["message"] = f"Ошибка импорта: {str(e)}"
+            print(f"Background import error: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            import_status["is_running"] = False
+            import_status["completed_at"] = datetime.utcnow().isoformat()
+            db_session.close()
+
+    # Запускаем в отдельном потоке
+    import_thread = threading.Thread(target=run_import_in_background, daemon=True)
+    import_thread.start()
+
+    # Немедленно возвращаем ответ клиенту
+    return {
+        "success": True,
+        "message": "Import started in background. Use /admin/import-status to check progress",
+        "started_at": import_status["started_at"]
+    }
+
+
+def perform_database_import(tmp_upload_path, filter_by_roles, db, backend_dir, original_cwd):
+    """Выполняет импорт базы данных (запускается в фоновом потоке)"""
+    import zipfile
+
     os.chdir(backend_dir)
+    print(f"Импорт: текущая директория: {os.getcwd()}")
+    print(f"Импорт: backend директория: {backend_dir}")
 
     tmp_path = None
     tmp_dir = None
 
-    if file.filename.endswith('.zip'):
-        # Обрабатываем ZIP архив
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
-            shutil.copyfileobj(file.file, tmp_zip)
-            tmp_zip_path = tmp_zip.name
+    try:
+        import_status["message"] = "Распаковка файлов..."
+        import_status["progress"] = 5
 
-        # Создаем временную папку для извлечения файлов
-        tmp_dir = tempfile.mkdtemp()
+        if tmp_upload_path.endswith('.zip'):
+            # Обрабатываем ZIP архив
+            tmp_dir = tempfile.mkdtemp()
 
-        try:
-            with zipfile.ZipFile(tmp_zip_path, 'r') as zip_ref:
+            with zipfile.ZipFile(tmp_upload_path, 'r') as zip_ref:
                 zip_ref.extractall(tmp_dir)
 
             # Находим файл базы данных
@@ -2264,19 +2346,12 @@ async def import_database(
 
             print(f"Всего файлов восстановлено: {restored_files}")
 
-        except zipfile.BadZipFile:
-            raise HTTPException(status_code=400, detail="Invalid ZIP file")
-        finally:
-            # Удаляем временный ZIP файл
-            if os.path.exists(tmp_zip_path):
-                os.remove(tmp_zip_path)
-    else:
-        # Обрабатываем обычный .db файл
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp_file:
-            shutil.copyfileobj(file.file, tmp_file)
-            tmp_path = tmp_file.name
-    
-    try:
+        else:
+            # Обрабатываем обычный .db файл
+            tmp_path = tmp_upload_path
+
+        import_status["message"] = "Подключение к базе данных..."
+        import_status["progress"] = 15
         # Подключаемся к загруженной БД
         source_engine = create_engine(f"sqlite:///{tmp_path}")
         
@@ -2313,6 +2388,9 @@ async def import_database(
         }
         
         # Импортируем пользователей
+        import_status["message"] = "Импорт пользователей..."
+        import_status["progress"] = 20
+
         if "users" in available_tables:
             try:
                 # Используем прямой SQL запрос для большей гибкости
@@ -2352,6 +2430,9 @@ async def import_database(
                 pass
         
         # Импортируем проекты
+        import_status["message"] = "Импорт проектов..."
+        import_status["progress"] = 30
+
         project_mapping = {}
         if "projects" in available_tables:
             try:
@@ -2811,6 +2892,8 @@ async def import_database(
                 cursor.execute("PRAGMA table_info(tasks)")
                 columns = [col[1] for col in cursor.fetchall()]
 
+                import_status["message"] = f"Импорт задач ({len(rows)} задач)..."
+                import_status["progress"] = 50
                 print(f"Импортируем задачи из экспорта приложения: {len(rows)} задач")
 
                 for row in rows:
@@ -3108,6 +3191,9 @@ async def import_database(
 
         # Импортируем CRM заявки (leads)
         lead_mapping = {}  # old_lead_id -> new_lead_id
+        import_status["message"] = "Импорт CRM заявок..."
+        import_status["progress"] = 70
+
         if "leads" in available_tables:
             try:
                 cursor = source_session.connection().connection.cursor()
@@ -3648,6 +3734,9 @@ async def import_database(
         print(f"📋 Всего повторяющихся задач в БД: {recurring_tasks_count}")
 
         # Update database version after successful import
+        import_status["message"] = "Обновление версии базы данных..."
+        import_status["progress"] = 95
+
         try:
             # Create or update database version record
             version_timestamp = datetime.utcnow().isoformat()
@@ -3665,22 +3754,23 @@ async def import_database(
             print(f"🔄 Database version updated to: {version_timestamp}")
         except Exception as e:
             print(f"Warning: Could not update database version: {e}")
+            version_timestamp = datetime.utcnow().isoformat()
 
-        return {
-            "success": True,
-            "message": "Database imported successfully",
-            "imported": imported_data,
-            "available_tables": available_tables,
-            "database_version": version_timestamp,
-            "recurring_tasks_count": recurring_tasks_count
-        }
-        
+        # Обновляем глобальный статус
+        import_status["message"] = "Импорт завершен успешно!"
+        import_status["progress"] = 100
+        import_status["imported_data"] = imported_data
+
+        print(f"✅ Импорт завершен успешно! Импортировано: {imported_data}")
+
     except Exception as e:
         print(f"Import database error: {e}")
         import traceback
         traceback.print_exc()
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+        import_status["error"] = str(e)
+        import_status["message"] = f"Ошибка: {str(e)}"
+        raise
     finally:
         # Закрываем источник сессии если она была создана
         if 'source_session' in locals():
@@ -3688,6 +3778,9 @@ async def import_database(
         # Удаляем временный файл БД
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
+        # Удаляем загруженный файл
+        if tmp_upload_path and os.path.exists(tmp_upload_path):
+            os.remove(tmp_upload_path)
         # Удаляем временную папку если была создана
         if tmp_dir and os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir)
@@ -4068,132 +4161,70 @@ async def clear_database(
     if current.role != models.RoleEnum.admin:
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
-    try:
-        # Счетчики для отчета (упрощённая версия)
-        deleted_counts = {}
+    # Счетчики для отчета
+    deleted_counts = {}
 
+    def safe_delete(entity_name, delete_func):
+        """Безопасное удаление с обработкой ошибок"""
+        try:
+            count = delete_func()
+            db.commit()  # Коммитим каждую операцию отдельно
+            deleted_counts[entity_name] = count
+            return count
+        except Exception as e:
+            db.rollback()
+            print(f"Error deleting {entity_name}: {e}")
+            deleted_counts[entity_name] = 0
+            return 0
+
+    try:
         # Удаляем задачи
-        if hasattr(models, 'Task'):
-            count = db.query(models.Task).count()
-            deleted_counts["tasks"] = count
-            db.query(models.Task).delete()
+        safe_delete("tasks", lambda: db.query(models.Task).delete() if hasattr(models, 'Task') else 0)
 
         # Удаляем посты проектов
-        if hasattr(models, 'ProjectPost'):
-            count = db.query(models.ProjectPost).count()
-            deleted_counts["posts"] = count
-            db.query(models.ProjectPost).delete()
+        safe_delete("posts", lambda: db.query(models.ProjectPost).delete() if hasattr(models, 'ProjectPost') else 0)
 
         # Удаляем съемки
-        if hasattr(models, 'Shooting'):
-            count = db.query(models.Shooting).count()
-            deleted_counts["shootings"] = count
-            db.query(models.Shooting).delete()
+        safe_delete("shootings", lambda: db.query(models.Shooting).delete() if hasattr(models, 'Shooting') else 0)
 
         # Удаляем все типы расходов
-        if hasattr(models, 'ProjectExpense'):
-            count = db.query(models.ProjectExpense).count()
-            deleted_counts["project_expenses"] = count
-            db.query(models.ProjectExpense).delete()
-
-        if hasattr(models, 'ProjectClientExpense'):
-            count = db.query(models.ProjectClientExpense).count()
-            deleted_counts["project_client_expenses"] = count
-            db.query(models.ProjectClientExpense).delete()
-
-        if hasattr(models, 'EmployeeExpense'):
-            count = db.query(models.EmployeeExpense).count()
-            deleted_counts["employee_expenses"] = count
-            db.query(models.EmployeeExpense).delete()
-
-        if hasattr(models, 'DigitalProjectExpense'):
-            count = db.query(models.DigitalProjectExpense).count()
-            deleted_counts["digital_project_expenses"] = count
-            db.query(models.DigitalProjectExpense).delete()
+        safe_delete("project_expenses", lambda: db.query(models.ProjectExpense).delete() if hasattr(models, 'ProjectExpense') else 0)
+        safe_delete("project_client_expenses", lambda: db.query(models.ProjectClientExpense).delete() if hasattr(models, 'ProjectClientExpense') else 0)
+        safe_delete("employee_expenses", lambda: db.query(models.EmployeeExpense).delete() if hasattr(models, 'EmployeeExpense') else 0)
+        safe_delete("digital_project_expenses", lambda: db.query(models.DigitalProjectExpense).delete() if hasattr(models, 'DigitalProjectExpense') else 0)
 
         # Удаляем поступления
-        if hasattr(models, 'ProjectReceipt'):
-            count = db.query(models.ProjectReceipt).count()
-            deleted_counts["receipts"] = count
-            db.query(models.ProjectReceipt).delete()
+        safe_delete("receipts", lambda: db.query(models.ProjectReceipt).delete() if hasattr(models, 'ProjectReceipt') else 0)
 
         # Удаляем отчеты по проектам
-        if hasattr(models, 'ProjectReport'):
-            count = db.query(models.ProjectReport).count()
-            deleted_counts["project_reports"] = count
-            db.query(models.ProjectReport).delete()
+        safe_delete("project_reports", lambda: db.query(models.ProjectReport).delete() if hasattr(models, 'ProjectReport') else 0)
 
         # Удаляем цифровые проекты и связанные данные
-        if hasattr(models, 'DigitalProjectTask'):
-            db.query(models.DigitalProjectTask).delete()
-        if hasattr(models, 'DigitalProjectFinance'):
-            db.query(models.DigitalProjectFinance).delete()
-        if hasattr(models, 'DigitalProject'):
-            count = db.query(models.DigitalProject).count()
-            deleted_counts["digital_projects"] = count
-            db.query(models.DigitalProject).delete()
-        if hasattr(models, 'DigitalService'):
-            db.query(models.DigitalService).delete()
+        safe_delete("digital_project_tasks", lambda: db.query(models.DigitalProjectTask).delete() if hasattr(models, 'DigitalProjectTask') else 0)
+        safe_delete("digital_project_finance", lambda: db.query(models.DigitalProjectFinance).delete() if hasattr(models, 'DigitalProjectFinance') else 0)
+        safe_delete("digital_projects", lambda: db.query(models.DigitalProject).delete() if hasattr(models, 'DigitalProject') else 0)
+        safe_delete("digital_services", lambda: db.query(models.DigitalService).delete() if hasattr(models, 'DigitalService') else 0)
 
         # Удаляем проекты
-        if hasattr(models, 'Project'):
-            count = db.query(models.Project).count()
-            deleted_counts["projects"] = count
-            db.query(models.Project).delete()
+        safe_delete("projects", lambda: db.query(models.Project).delete() if hasattr(models, 'Project') else 0)
 
         # Удаляем операторов
-        if hasattr(models, 'Operator'):
-            count = db.query(models.Operator).count()
-            deleted_counts["operators"] = count
-            db.query(models.Operator).delete()
+        safe_delete("operators", lambda: db.query(models.Operator).delete() if hasattr(models, 'Operator') else 0)
 
-        # Удаляем заявки и связанные данные (используем прямые SQL запросы для таблиц с проблемами)
-        try:
-            # Удаляем историю заявок
-            db.execute(text("DELETE FROM lead_history"))
-            deleted_counts["lead_history"] = 0
-        except:
-            pass
-
-        try:
-            # Удаляем вложения заявок
-            db.execute(text("DELETE FROM lead_attachments"))
-            deleted_counts["lead_attachments"] = 0
-        except:
-            pass
-
-        try:
-            # Удаляем заметки заявок
-            db.execute(text("DELETE FROM lead_notes"))
-            deleted_counts["lead_notes"] = 0
-        except:
-            pass
-
-        try:
-            # Удаляем заявки
-            db.execute(text("DELETE FROM leads"))
-            deleted_counts["leads"] = 0
-        except:
-            pass
+        # Удаляем заявки и связанные данные
+        safe_delete("lead_history", lambda: db.execute(text("DELETE FROM lead_history")).rowcount)
+        safe_delete("lead_attachments", lambda: db.execute(text("DELETE FROM lead_attachments")).rowcount)
+        safe_delete("lead_notes", lambda: db.execute(text("DELETE FROM lead_notes")).rowcount)
+        safe_delete("leads", lambda: db.execute(text("DELETE FROM leads")).rowcount)
 
         # Удаляем повторяющиеся задачи
-        try:
-            db.execute(text("DELETE FROM recurring_tasks"))
-            deleted_counts["recurring_tasks"] = 0
-        except:
-            pass
+        safe_delete("recurring_tasks", lambda: db.execute(text("DELETE FROM recurring_tasks")).rowcount)
 
         # Удаляем всех пользователей кроме текущего админа
-        if hasattr(models, 'User'):
-            count = db.query(models.User).filter(models.User.id != current.id).count()
-            deleted_counts["users"] = count
-            db.query(models.User).filter(models.User.id != current.id).delete()
+        safe_delete("users", lambda: db.query(models.User).filter(models.User.id != current.id).delete() if hasattr(models, 'User') else 0)
 
         # Удаляем настройки (кроме timezone)
-        if hasattr(models, 'Setting'):
-            db.query(models.Setting).filter(
-                models.Setting.key.notin_(["timezone"])
-            ).delete()
+        safe_delete("settings", lambda: db.query(models.Setting).filter(models.Setting.key.notin_(["timezone"])).delete() if hasattr(models, 'Setting') else 0)
 
         # Очищаем все папки с файлами
         file_directories = [
@@ -4222,21 +4253,22 @@ async def clear_database(
         deleted_counts["files"] = cleared_files
 
         # Удаляем налоги
-        if hasattr(models, 'Tax'):
-            db.query(models.Tax).delete()
+        safe_delete("taxes", lambda: db.query(models.Tax).delete() if hasattr(models, 'Tax') else 0)
 
-        # Сохраняем изменения
-        db.commit()
-
-        # Пересоздаем дефолтные налоги
-        if hasattr(crud, 'create_tax'):
-            crud.create_tax(db, "ЯТТ", 0.95)
-            crud.create_tax(db, "ООО", 0.83)
-            crud.create_tax(db, "Нал", 1.0)
+        # Пересоздаем дефолтные налоги в отдельной транзакции
+        try:
+            if hasattr(crud, 'create_tax'):
+                crud.create_tax(db, "ЯТТ", 0.95)
+                crud.create_tax(db, "ООО", 0.83)
+                crud.create_tax(db, "Нал", 1.0)
+                db.commit()
+        except Exception as e:
+            db.rollback()
+            print(f"Error creating default taxes: {e}")
 
         return {
             "success": True,
-            "message": "Database cleared successfully",
+            "message": "Database cleared successfully (some operations may have failed)",
             "deleted": deleted_counts
         }
 
@@ -4244,8 +4276,11 @@ async def clear_database(
         import traceback
         error_details = traceback.format_exc()
         print(f"[ERROR] Clear database failed: {error_details}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Clear failed: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Clear failed: {str(e)}",
+            "deleted": deleted_counts
+        }
 
 # Endpoint для проверки синхронизации с Telegram ботом
 @app.get("/sync/check")

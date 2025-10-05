@@ -229,15 +229,39 @@ class TelegramBot:
     def _create_connection(self):
         """Создать новое подключение к БД"""
         try:
-            logger.info(f"Попытка подключения к БД: {DATABASE_PATH}")
-            conn = sqlite3.connect(
-                DATABASE_PATH,
-                timeout=30.0,
-                check_same_thread=False
-            )
-            conn.row_factory = sqlite3.Row
-            logger.info("✅ Подключение к БД создано успешно")
-            return conn
+            db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
+            if db_engine == 'postgresql':
+                # PostgreSQL подключение
+                import psycopg2
+                import psycopg2.extras
+
+                conn_params = {
+                    'host': os.getenv('POSTGRES_HOST', 'localhost'),
+                    'port': os.getenv('POSTGRES_PORT', '5432'),
+                    'database': os.getenv('POSTGRES_DB', '8bit_tasks'),
+                    'user': os.getenv('POSTGRES_USER', '8bit_user'),
+                    'password': os.getenv('POSTGRES_PASSWORD', ''),
+                }
+
+                logger.info(f"Попытка подключения к PostgreSQL: {conn_params['host']}:{conn_params['port']}/{conn_params['database']}")
+                conn = psycopg2.connect(**conn_params)
+                # Используем RealDictCursor для совместимости со sqlite3.Row
+                conn.cursor_factory = psycopg2.extras.RealDictCursor
+                logger.info("✅ Подключение к PostgreSQL создано успешно")
+                return conn
+            else:
+                # SQLite подключение
+                logger.info(f"Попытка подключения к SQLite: {DATABASE_PATH}")
+                conn = sqlite3.connect(
+                    DATABASE_PATH,
+                    timeout=30.0,
+                    check_same_thread=False
+                )
+                conn.row_factory = sqlite3.Row
+                logger.info("✅ Подключение к SQLite создано успешно")
+                return conn
+
         except Exception as e:
             logger.error(f"Ошибка создания подключения к БД: {e}")
             return None
