@@ -20,7 +20,12 @@ if SECRET_KEY == "CHANGE_ME" or len(SECRET_KEY) < 32:
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Поддержка нескольких схем хэширования (bcrypt, argon2, pbkdf2)
+pwd_context = CryptContext(
+    schemes=["bcrypt", "argon2", "pbkdf2_sha256"],
+    deprecated="auto",
+    bcrypt__rounds=12,
+)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
