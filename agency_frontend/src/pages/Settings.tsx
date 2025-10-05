@@ -116,6 +116,8 @@ function Settings() {
 
     try {
       const token = localStorage.getItem('token')
+
+      // Запускаем импорт
       const response = await fetch(`${API_URL}/admin/import-database`, {
         method: 'POST',
         headers: {
@@ -125,38 +127,80 @@ function Settings() {
       })
 
       const data = await response.json()
-      
-      if (response.ok) {
-        setImportResult(data)
-        const availableTables = data.available_tables ? `\n\nОбнаруженные таблицы: ${data.available_tables.join(', ')}` : ''
-        alert(`База данных успешно импортирована!\n
-Импортировано:
-- Пользователей: ${data.imported.users}
-- Проектов: ${data.imported.projects}
-- Задач: ${data.imported.tasks}
-- Цифровых проектов: ${data.imported.digital_projects}
-- Операторов: ${data.imported.operators}
-- Статей расходов: ${data.imported.expense_items}
-- Налогов: ${data.imported.taxes}
-- CRM заявок: ${data.imported.leads || 0}
-- Заметок к заявкам: ${data.imported.lead_notes || 0}
-- Вложений к заявкам: ${data.imported.lead_attachments || 0}
-- Истории заявок: ${data.imported.lead_history || 0}
-- Категорий расходов: ${data.imported.expense_categories || 0}
-- Расходов по проектам: ${data.imported.project_expenses || 0}
-- Общих расходов: ${data.imported.common_expenses || 0}
-- Расходов по цифр. проектам: ${data.imported.digital_project_expenses || 0}
-- Расходов сотрудников: ${data.imported.employee_expenses || 0}
-- Отчетов по проектам: ${data.imported.project_reports || 0}${availableTables}`)
-      } else {
+
+      if (!response.ok) {
         alert(`Ошибка импорта: ${data.detail}`)
+        setImporting(false)
+        if (fileInputRef.current) {
+          fileInputRef.current.value = ''
+        }
+        return
       }
+
+      // Импорт запущен в фоне, показываем прогресс
+      alert('Импорт запущен в фоновом режиме. Пожалуйста, подождите...')
+
+      // Polling статуса импорта
+      const pollInterval = setInterval(async () => {
+        try {
+          const statusResponse = await fetch(`${API_URL}/admin/import-status`, {
+            headers: {
+              Authorization: `Bearer ${token}`
+            }
+          })
+
+          if (statusResponse.ok) {
+            const status = await statusResponse.json()
+
+            // Обновляем UI с прогрессом
+            console.log(`Импорт: ${status.progress}% - ${status.message}`)
+
+            // Проверяем завершение
+            if (!status.is_running) {
+              clearInterval(pollInterval)
+
+              if (status.error) {
+                alert(`Ошибка импорта: ${status.error}`)
+              } else if (status.imported_data) {
+                const imported = status.imported_data
+                setImportResult(status)
+                const availableTables = imported.available_tables ? `\n\nОбнаруженные таблицы: ${imported.available_tables.join(', ')}` : ''
+                alert(`База данных успешно импортирована!\n
+Импортировано:
+- Пользователей: ${imported.users || 0}
+- Проектов: ${imported.projects || 0}
+- Задач: ${imported.tasks || 0}
+- Цифровых проектов: ${imported.digital_projects || 0}
+- Операторов: ${imported.operators || 0}
+- Статей расходов: ${imported.expense_items || 0}
+- Налогов: ${imported.taxes || 0}
+- CRM заявок: ${imported.leads || 0}
+- Заметок к заявкам: ${imported.lead_notes || 0}
+- Вложений к заявкам: ${imported.lead_attachments || 0}
+- Истории заявок: ${imported.lead_history || 0}
+- Категорий расходов: ${imported.expense_categories || 0}
+- Расходов по проектам: ${imported.project_expenses || 0}
+- Общих расходов: ${imported.common_expenses || 0}
+- Расходов по цифр. проектам: ${imported.digital_project_expenses || 0}
+- Расходов сотрудников: ${imported.employee_expenses || 0}
+- Отчетов по проектам: ${imported.project_reports || 0}${availableTables}`)
+              }
+
+              setImporting(false)
+              if (fileInputRef.current) {
+                fileInputRef.current.value = ''
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error checking import status:', error)
+        }
+      }, 2000) // Проверяем статус каждые 2 секунды
+
     } catch (error) {
       console.error('Error importing database:', error)
       alert('Ошибка при импорте базы данных')
-    } finally {
       setImporting(false)
-      // Очищаем input
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
       }
