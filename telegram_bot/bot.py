@@ -58,7 +58,15 @@ except ImportError:
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 DATABASE_PATH = os.getenv('SQLITE_PATH', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'shared_database.db'))
-API_BASE_URL = 'http://127.0.0.1:8000'
+
+# API URL: в Docker используем имя контейнера, локально - localhost
+API_BASE_URL = os.getenv('API_BASE_URL', 'http://backend:8000')
+if os.path.exists('/.dockerenv'):
+    # Внутри Docker контейнера
+    API_BASE_URL = os.getenv('API_BASE_URL', 'http://backend:8000')
+else:
+    # Локальная разработка
+    API_BASE_URL = os.getenv('API_BASE_URL', 'http://127.0.0.1:8000')
 
 # Настройка логирования
 logging.basicConfig(
