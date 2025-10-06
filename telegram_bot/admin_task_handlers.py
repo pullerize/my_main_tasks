@@ -30,9 +30,13 @@ class AdminTaskHandlers:
             cursor = conn.cursor()
             # Заменяем ? на %s для PostgreSQL
             pg_query = query.replace('?', '%s')
-            # Заменяем is_active = 1 на is_active = true для PostgreSQL
+            # Заменяем boolean поля: 1/0 -> true/false для PostgreSQL
             pg_query = pg_query.replace('is_active = 1', 'is_active = true')
             pg_query = pg_query.replace('is_active = 0', 'is_active = false')
+            pg_query = pg_query.replace('is_archived = 1', 'is_archived = true')
+            pg_query = pg_query.replace('is_archived = 0', 'is_archived = false')
+            pg_query = pg_query.replace('is_recurring = 1', 'is_recurring = true')
+            pg_query = pg_query.replace('is_recurring = 0', 'is_recurring = false')
             cursor.execute(pg_query, params)
             return cursor
         else:
