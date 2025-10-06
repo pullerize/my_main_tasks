@@ -1041,7 +1041,7 @@ class AdminTaskHandlers:
                 if project:
                     project_name = project['name']
 
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 INSERT INTO tasks (
                     title, description, project, executor_id, author_id,
                     deadline, status, task_type, task_format, created_at
@@ -1063,10 +1063,11 @@ class AdminTaskHandlers:
             conn.commit()
 
             # Получаем telegram_id исполнителя для отправки уведомления
-            executor = conn.execute(
+            executor_cursor = self._execute_query(conn,
                 "SELECT telegram_id FROM users WHERE id = ?",
                 (task_data.get('executor_id'),)
-            ).fetchone()
+            )
+            executor = executor_cursor.fetchone()
 
             conn.close()
 
@@ -1297,12 +1298,12 @@ class AdminTaskHandlers:
             return []
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT id, name, start_date
                 FROM projects
                 WHERE is_archived = 0
                 ORDER BY start_date DESC
-            """)
+            """, ())
 
             projects = []
             for row in cursor.fetchall():
@@ -1327,7 +1328,7 @@ class AdminTaskHandlers:
             return None
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT id, name
                 FROM projects
                 WHERE id = ?
@@ -1606,7 +1607,7 @@ class AdminTaskHandlers:
                 return
 
             # Получаем активные задачи пользователя (статусы "new", "in_progress" и "overdue")
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT id, title, description, project, task_type, deadline, created_at
                 FROM tasks
                 WHERE executor_id = ? AND status IN ('new', 'in_progress', 'overdue')
@@ -1806,13 +1807,13 @@ class AdminTaskHandlers:
                 return
 
             # Получаем все активные задачи (только статус в работе) с информацией об исполнителях
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT t.id, t.title, t.project, t.task_type, t.deadline, u.name as executor_name, u.role
                 FROM tasks t
                 LEFT JOIN users u ON t.executor_id = u.id
                 WHERE t.status = 'in_progress'
                 ORDER BY t.created_at DESC
-            """)
+            """, ())
 
             tasks = cursor.fetchall()
 
@@ -2001,7 +2002,7 @@ class AdminTaskHandlers:
             if not conn:
                 return []
 
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT id, name, telegram_username, role
                 FROM users
                 WHERE role = ? AND is_active = 1
@@ -2206,7 +2207,7 @@ class AdminTaskHandlers:
 
             # Получаем завершенные задачи пользователя (только статус "done")
             if start_date:
-                cursor = conn.execute("""
+                cursor = self._execute_query(conn, """
                     SELECT id, title, description, project, task_type, deadline, created_at, finished_at
                     FROM tasks
                     WHERE executor_id = ? AND status = 'done' AND finished_at >= ?
@@ -2214,7 +2215,7 @@ class AdminTaskHandlers:
                     LIMIT 50
                 """, (user['id'], start_date.isoformat()))
             else:
-                cursor = conn.execute("""
+                cursor = self._execute_query(conn, """
                     SELECT id, title, description, project, task_type, deadline, created_at, finished_at
                     FROM tasks
                     WHERE executor_id = ? AND status = 'done'
@@ -2568,7 +2569,7 @@ class AdminTaskHandlers:
 
         try:
             # Показываем только задачи, назначенные на текущего пользователя
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT t.id, t.title, t.description, t.project, t.task_type, t.deadline,
                        t.created_at, u.name as executor_name, u.id as executor_id
                 FROM tasks t
