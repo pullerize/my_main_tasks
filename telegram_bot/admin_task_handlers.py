@@ -2377,17 +2377,17 @@ class AdminTaskHandlers:
                     task_finished = task[7]
 
                 # Заголовок задачи с номером
-                task_info.append(f"📝 **Задача #{i}**")
-                task_info.append(f"**{task_title}**")
+                task_info.append(f"✅ Задача #{i}")
+                task_info.append(f"{task_title}")
                 task_info.append("─────────────────────")
 
                 # Проект
                 if task_project:
-                    task_info.append(f"🎯 **Проект:** {task_project}")
+                    task_info.append(f"🎯 Проект: {task_project}")
 
                 # Тип задачи
                 if task_type:
-                    task_info.append(f"📂 **Тип:** {self.get_task_type_for_webapp(task_type)}")
+                    task_info.append(f"📂 Тип: {self.get_task_type_for_webapp(task_type)}")
 
                 # Дедлайн
                 if task_deadline:
@@ -2396,13 +2396,10 @@ class AdminTaskHandlers:
                         deadline_str_value = str(task_deadline)
                         deadline_dt = datetime.fromisoformat(deadline_str_value.replace('Z', '+00:00'))
                         deadline_str = deadline_dt.strftime("%d.%m.%Y в %H:%M")
-                        task_info.append(f"⏰ **Дедлайн:** {deadline_str}")
+                        task_info.append(f"⏰ Дедлайн: {deadline_str}")
                     except Exception as e:
                         logger.error(f"Ошибка обработки дедлайна в архивных задачах: {e}")
-                        task_info.append(f"⏰ **Дедлайн:** {task_deadline}")
-
-                # Статус завершено
-                task_info.append("✅ **Статус:** Завершено")
+                        task_info.append(f"⏰ Дедлайн: {task_deadline}")
 
                 # Дата завершения
                 if task_finished:
@@ -2411,7 +2408,7 @@ class AdminTaskHandlers:
                         finished_str_value = str(task_finished)
                         finished_dt = datetime.fromisoformat(finished_str_value.replace('Z', '+00:00'))
                         finished_str = finished_dt.strftime("%d.%m.%Y в %H:%M")
-                        task_info.append(f"🏁 **Завершено:** {finished_str}")
+                        task_info.append(f"🏁 Завершено: {finished_str}")
                     except Exception as e:
                         logger.error(f"Ошибка обработки даты завершения: {e}")
 
@@ -2420,7 +2417,7 @@ class AdminTaskHandlers:
                     desc = str(task_desc)
                     if len(desc) > 200:
                         desc = desc[:200] + "..."
-                    task_info.append(f"📄 **Описание:**\n{desc}")
+                    task_info.append(f"📄 Описание:\n{desc}")
 
                 # Дата создания
                 if task_created:
@@ -2429,7 +2426,7 @@ class AdminTaskHandlers:
                         created_str_value = str(task_created)
                         created_dt = datetime.fromisoformat(created_str_value.replace('Z', '+00:00'))
                         created_str = created_dt.strftime("%d.%m.%Y")
-                        task_info.append(f"📅 **Создано:** {created_str}")
+                        task_info.append(f"📅 Создано: {created_str}")
                     except Exception as e:
                         logger.error(f"Ошибка обработки даты создания: {e}")
 
