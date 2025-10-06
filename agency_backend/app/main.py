@@ -3552,13 +3552,23 @@ def perform_database_import(tmp_upload_path, filter_by_roles, db, backend_dir, o
                         except:
                             date = None
 
+                    # Проверяем существование проекта если указан project_id
+                    project_id = expense_data.get('project_id')
+                    if project_id:
+                        # Проверяем есть ли такой проект в целевой БД
+                        existing_project = db.query(models.Project).filter(models.Project.id == project_id).first()
+                        if not existing_project:
+                            # Проект не существует, устанавливаем None
+                            print(f"Warning: Project ID {project_id} not found for employee expense, setting to NULL")
+                            project_id = None
+
                     new_expense = models.EmployeeExpense(
                         user_id=expense_data.get('employee_id'),
                         name=expense_data.get('name', expense_data.get('description', 'Импортированный расход')),
                         description=expense_data.get('description'),
                         amount=float(expense_data.get('amount', 0)),
                         date=date or datetime.utcnow().date(),
-                        project_id=expense_data.get('project_id')
+                        project_id=project_id
                     )
                     db.add(new_expense)
                     imported_data["employee_expenses"] += 1
