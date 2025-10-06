@@ -2066,18 +2066,33 @@ class AdminTaskHandlers:
 
             users = []
             rows = cursor.fetchall()
-            for row in rows:
-                users.append({
-                    'id': row[0],
-                    'name': row[1],
-                    'telegram_username': row[2],
-                    'role': row[3]
-                })
 
+            import os
+            db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
+            for row in rows:
+                if db_engine == 'postgresql':
+                    # PostgreSQL с RealDictCursor возвращает dict-like объекты
+                    users.append({
+                        'id': row['id'] if isinstance(row, dict) else row[0],
+                        'name': row['name'] if isinstance(row, dict) else row[1],
+                        'telegram_username': row['telegram_username'] if isinstance(row, dict) else row[2],
+                        'role': row['role'] if isinstance(row, dict) else row[3]
+                    })
+                else:
+                    # SQLite возвращает tuple
+                    users.append({
+                        'id': row[0],
+                        'name': row[1],
+                        'telegram_username': row[2],
+                        'role': row[3]
+                    })
+
+            logger.info(f"get_users_by_role_for_active_tasks: Found {len(users)} users for role {role_key}")
             return users
 
         except Exception as e:
-            print(f"Ошибка при получении пользователей по роли {role_key}: {e}")
+            logger.error(f"Ошибка при получении пользователей по роли {role_key}: {e}")
             return []
         finally:
             if conn:
