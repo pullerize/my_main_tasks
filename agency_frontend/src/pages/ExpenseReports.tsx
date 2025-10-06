@@ -258,6 +258,7 @@ const ExpenseReports: React.FC = () => {
 
       // For project expenses, we need different query params
       const projectQueryParams = new URLSearchParams();
+      if (selectedProject) projectQueryParams.append('project_id', String(selectedProject));
       if (filters.start_date) projectQueryParams.append('start_date', filters.start_date);
       if (filters.end_date) projectQueryParams.append('end_date', filters.end_date);
       projectQueryParams.append('limit', '1000');
