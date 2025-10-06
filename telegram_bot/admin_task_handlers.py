@@ -17,10 +17,16 @@ class AdminTaskHandlers:
     def __init__(self, bot_instance):
         self.bot = bot_instance
 
-    def _execute_query(self, conn, query: str, params: tuple):
+    def _execute_query(self, conn, query: str, params: tuple, return_id: bool = False):
         """
         Вспомогательная функция для выполнения SQL запросов
         с автоматическим определением типа БД (SQLite или PostgreSQL)
+
+        Args:
+            conn: Database connection
+            query: SQL query string
+            params: Query parameters
+            return_id: If True, добавляет RETURNING id для PostgreSQL INSERT запросов
         """
         import os
         db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
@@ -37,6 +43,11 @@ class AdminTaskHandlers:
             pg_query = pg_query.replace('is_archived = 0', 'is_archived = false')
             pg_query = pg_query.replace('is_recurring = 1', 'is_recurring = true')
             pg_query = pg_query.replace('is_recurring = 0', 'is_recurring = false')
+
+            # Для INSERT запросов в PostgreSQL добавляем RETURNING id
+            if return_id and 'INSERT INTO' in pg_query.upper():
+                pg_query = pg_query.rstrip().rstrip(';') + ' RETURNING id'
+
             cursor.execute(pg_query, params)
             return cursor
         else:
@@ -1061,9 +1072,20 @@ class AdminTaskHandlers:
                 self.get_task_type_for_webapp(task_data.get('task_type')),
                 task_data.get('format'),
                 datetime.now()  # Используем локальное время
-            ))
+            ), return_id=True)
 
-            task_id = cursor.lastrowid
+            # Получаем ID созданной задачи
+            import os
+            db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
+            if db_engine == 'postgresql':
+                # PostgreSQL: ID возвращается через RETURNING id
+                result = cursor.fetchone()
+                task_id = result['id'] if isinstance(result, dict) else result[0]
+            else:
+                # SQLite: используем lastrowid
+                task_id = cursor.lastrowid
+
             conn.commit()
 
             # Получаем telegram_id и name исполнителя для отправки уведомления

@@ -226,10 +226,16 @@ class TelegramBot:
         self.user_task_handlers = UserTaskHandlers(self)
         self.expense_handlers = ExpenseHandlers(self)
 
-    def _execute_query(self, conn, query: str, params: tuple):
+    def _execute_query(self, conn, query: str, params: tuple, return_id: bool = False):
         """
         Вспомогательная функция для выполнения SQL запросов
         с автоматическим определением типа БД (SQLite или PostgreSQL)
+
+        Args:
+            conn: Database connection
+            query: SQL query string
+            params: Query parameters
+            return_id: If True, добавляет RETURNING id для PostgreSQL INSERT запросов
         """
         import os
         db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
@@ -246,6 +252,11 @@ class TelegramBot:
             pg_query = pg_query.replace('is_archived = 0', 'is_archived = false')
             pg_query = pg_query.replace('is_recurring = 1', 'is_recurring = true')
             pg_query = pg_query.replace('is_recurring = 0', 'is_recurring = false')
+
+            # Для INSERT запросов в PostgreSQL добавляем RETURNING id
+            if return_id and 'INSERT INTO' in pg_query.upper():
+                pg_query = pg_query.rstrip().rstrip(';') + ' RETURNING id'
+
             cursor.execute(pg_query, params)
             return cursor
         else:
