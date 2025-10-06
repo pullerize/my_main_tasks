@@ -2847,28 +2847,47 @@ class TelegramBot:
                 return
 
             cursor = self._execute_query(conn, "SELECT title, executor_id FROM tasks WHERE id = ?", (task_id,))
-            task = cursor.fetchone()
+            task_row = cursor.fetchone()
 
-            if not task:
+            if not task_row:
                 await query.edit_message_text("❌ Задача не найдена")
                 return
 
+            # Извлекаем данные с учетом типа БД
+            import os
+            db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
+            if db_engine == 'postgresql':
+                task_title = task_row['title'] if isinstance(task_row, dict) else task_row[0]
+                task_executor_id = task_row['executor_id'] if isinstance(task_row, dict) else task_row[1]
+            else:
+                task_title = task_row[0]
+                task_executor_id = task_row[1]
+
             # Проверяем права доступа (админ или исполнитель задачи)
-            if db_user['role'] != 'admin' and task['executor_id'] != db_user['id']:
+            if db_user['role'] != 'admin' and task_executor_id != db_user['id']:
                 await query.edit_message_text("❌ У вас нет прав для завершения этой задачи")
                 return
 
-            # Обновляем статус задачи на "completed"
-            self._execute_query(conn, """
-                UPDATE tasks
-                SET status = 'done', finished_at = datetime('now')
-                WHERE id = ?
-            """, (task_id,))
+            # Обновляем статус задачи на "done"
+            # Для PostgreSQL используем CURRENT_TIMESTAMP, для SQLite - datetime('now')
+            if db_engine == 'postgresql':
+                self._execute_query(conn, """
+                    UPDATE tasks
+                    SET status = 'done', finished_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (task_id,))
+            else:
+                self._execute_query(conn, """
+                    UPDATE tasks
+                    SET status = 'done', finished_at = datetime('now')
+                    WHERE id = ?
+                """, (task_id,))
             conn.commit()
 
             await query.edit_message_text(
                 f"✅ **Задача завершена!**\n\n"
-                f"📝 **{task['title']}**\n"
+                f"📝 **{task_title}**\n"
                 f"🎉 Отличная работа!",
                 parse_mode='Markdown'
             )
@@ -2897,14 +2916,25 @@ class TelegramBot:
                 return
 
             cursor = self._execute_query(conn, "SELECT title, executor_id FROM tasks WHERE id = ?", (task_id,))
-            task = cursor.fetchone()
+            task_row = cursor.fetchone()
 
-            if not task:
+            if not task_row:
                 await query.edit_message_text("❌ Задача не найдена")
                 return
 
+            # Извлекаем данные с учетом типа БД
+            import os
+            db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
+            if db_engine == 'postgresql':
+                task_title = task_row['title'] if isinstance(task_row, dict) else task_row[0]
+                task_executor_id = task_row['executor_id'] if isinstance(task_row, dict) else task_row[1]
+            else:
+                task_title = task_row[0]
+                task_executor_id = task_row[1]
+
             # Проверяем права доступа (админ или исполнитель задачи)
-            if db_user['role'] != 'admin' and task['executor_id'] != db_user['id']:
+            if db_user['role'] != 'admin' and task_executor_id != db_user['id']:
                 await query.edit_message_text("❌ У вас нет прав для удаления этой задачи")
                 return
 
@@ -2914,7 +2944,7 @@ class TelegramBot:
 
             await query.edit_message_text(
                 f"🗑️ **Задача удалена**\n\n"
-                f"📝 **{task['title']}**\n"
+                f"📝 **{task_title}**\n"
                 f"✅ Задача полностью удалена из системы",
                 parse_mode='Markdown'
             )
