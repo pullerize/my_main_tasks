@@ -3571,6 +3571,7 @@ def perform_database_import(tmp_upload_path, filter_by_roles, db, backend_dir, o
                         project_id=project_id
                     )
                     db.add(new_expense)
+                    db.flush()  # Применяем изменения сразу, чтобы отловить ошибки FK
                     imported_data["employee_expenses"] += 1
             except Exception as e:
                 print(f"Error importing employee expenses: {e}")
