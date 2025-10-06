@@ -30,6 +30,9 @@ class AdminTaskHandlers:
             cursor = conn.cursor()
             # Заменяем ? на %s для PostgreSQL
             pg_query = query.replace('?', '%s')
+            # Заменяем is_active = 1 на is_active = true для PostgreSQL
+            pg_query = pg_query.replace('is_active = 1', 'is_active = true')
+            pg_query = pg_query.replace('is_active = 0', 'is_active = false')
             cursor.execute(pg_query, params)
             return cursor
         else:
