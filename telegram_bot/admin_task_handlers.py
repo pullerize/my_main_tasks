@@ -2703,6 +2703,10 @@ class AdminTaskHandlers:
             tasks = cursor.fetchall()
             conn.close()
 
+            # Определяем тип БД для правильной обработки результатов
+            import os
+            db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
             if not tasks:
                 # Получаем роль текущего пользователя для определения кнопок
                 keyboard = [
@@ -2722,38 +2726,70 @@ class AdminTaskHandlers:
 
             # Отправляем каждую задачу отдельным сообщением с inline кнопкой
             for i, task in enumerate(tasks, 1):
-                task_id, title, description, project, task_type, deadline, created_at, executor_name, executor_id = task
+                # Извлекаем данные задачи с учётом типа БД
+                if db_engine == 'postgresql':
+                    task_id = task['id'] if isinstance(task, dict) else task[0]
+                    title = task['title'] if isinstance(task, dict) else task[1]
+                    description = task['description'] if isinstance(task, dict) else task[2]
+                    project = task['project'] if isinstance(task, dict) else task[3]
+                    task_type = task['task_type'] if isinstance(task, dict) else task[4]
+                    deadline = task['deadline'] if isinstance(task, dict) else task[5]
+                    created_at = task['created_at'] if isinstance(task, dict) else task[6]
+                    executor_name = task['executor_name'] if isinstance(task, dict) else task[7]
+                    executor_id = task['executor_id'] if isinstance(task, dict) else task[8]
+                else:
+                    task_id = task[0]
+                    title = task[1]
+                    description = task[2]
+                    project = task[3]
+                    task_type = task[4]
+                    deadline = task[5]
+                    created_at = task[6]
+                    executor_name = task[7]
+                    executor_id = task[8]
 
-                # Формируем информацию о задаче
+                # Формируем информацию о задаче в улучшенном формате
                 task_info = []
-                task_info.append(f"🆕 **Задача #{task_id}**")
-                task_info.append(f"📝 **Название:** {title}")
-
-                if executor_name:
-                    task_info.append(f"👤 **Исполнитель:** {executor_name}")
+                task_info.append(f"🆕 **Задача #{i}**")
+                task_info.append(f"**{title}**")
+                task_info.append("─────────────────────")
 
                 if project:
-                    task_info.append(f"📁 **Проект:** {project}")
+                    task_info.append(f"🎯 **Проект:** {project}")
 
                 if task_type:
-                    task_info.append(f"🏷️ **Тип:** {task_type}")
+                    task_info.append(f"📂 **Тип:** {self.get_task_type_for_webapp(task_type)}")
 
                 # Форматируем дедлайн
                 if deadline:
                     from datetime import datetime
                     try:
-                        dl = datetime.fromisoformat(deadline)
+                        deadline_str_value = str(deadline)
+                        dl = datetime.fromisoformat(deadline_str_value.replace('Z', '+00:00'))
                         deadline_str = dl.strftime("%d.%m.%Y в %H:%M")
                         task_info.append(f"⏰ **Дедлайн:** {deadline_str}")
 
-                        # Показываем статус всегда "Новая"
-                        task_info.append("🔵 **Статус:** Новая")
-                    except:
+                        # Проверяем, сколько времени осталось до дедлайна
+                        now = datetime.now()
+                        time_left = dl - now
+                        if time_left.days < 0:
+                            task_info.append("🔴 **Срок:** Просрочен!")
+                        elif time_left.days == 0:
+                            task_info.append("🟡 **Срок:** Сегодня!")
+                        elif time_left.days == 1:
+                            task_info.append("🟠 **Срок:** Завтра")
+                        else:
+                            task_info.append(f"⏱️ **Осталось:** {time_left.days} дн.")
+                    except Exception as e:
+                        logger.error(f"Ошибка обработки дедлайна в непринятых задачах: {e}")
                         task_info.append(f"⏰ **Дедлайн:** {deadline}")
+
+                # Показываем статус "Новая"
+                task_info.append("🔵 **Статус:** Новая (не принята в работу)")
 
                 # Описание
                 if description:
-                    desc = description
+                    desc = str(description)
                     if len(desc) > 200:
                         desc = desc[:200] + "..."
                     task_info.append(f"📄 **Описание:**\n{desc}")
@@ -2762,11 +2798,12 @@ class AdminTaskHandlers:
                 if created_at:
                     try:
                         from datetime import datetime
-                        created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        created_str_value = str(created_at)
+                        created_dt = datetime.fromisoformat(created_str_value.replace('Z', '+00:00'))
                         created_str = created_dt.strftime("%d.%m.%Y")
                         task_info.append(f"📅 **Создано:** {created_str}")
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.error(f"Ошибка обработки даты создания: {e}")
 
                 task_message = "\n".join(task_info)
 
