@@ -226,6 +226,32 @@ class TelegramBot:
         self.user_task_handlers = UserTaskHandlers(self)
         self.expense_handlers = ExpenseHandlers(self)
 
+    def _execute_query(self, conn, query: str, params: tuple):
+        """
+        Вспомогательная функция для выполнения SQL запросов
+        с автоматическим определением типа БД (SQLite или PostgreSQL)
+        """
+        import os
+        db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
+        if db_engine == 'postgresql':
+            # PostgreSQL: создаем курсор и используем %s для параметров
+            cursor = conn.cursor()
+            # Заменяем ? на %s для PostgreSQL
+            pg_query = query.replace('?', '%s')
+            # Заменяем boolean поля: 1/0 -> true/false для PostgreSQL
+            pg_query = pg_query.replace('is_active = 1', 'is_active = true')
+            pg_query = pg_query.replace('is_active = 0', 'is_active = false')
+            pg_query = pg_query.replace('is_archived = 1', 'is_archived = true')
+            pg_query = pg_query.replace('is_archived = 0', 'is_archived = false')
+            pg_query = pg_query.replace('is_recurring = 1', 'is_recurring = true')
+            pg_query = pg_query.replace('is_recurring = 0', 'is_recurring = false')
+            cursor.execute(pg_query, params)
+            return cursor
+        else:
+            # SQLite: используем execute напрямую с ?
+            return conn.execute(query, params)
+
     def _create_connection(self):
         """Создать новое подключение к БД"""
         try:
@@ -320,7 +346,7 @@ class TelegramBot:
             return []
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT t.*
                 FROM tasks t
                 WHERE t.executor_id = ? AND t.status = 'in_progress'
@@ -342,7 +368,7 @@ class TelegramBot:
             return []
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT t.*
                 FROM tasks t
                 WHERE t.executor_id = ? AND t.status = 'in_progress'
@@ -364,7 +390,7 @@ class TelegramBot:
             return []
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT DISTINCT p.*
                 FROM projects p
                 INNER JOIN tasks t ON p.id = t.project_id
@@ -386,7 +412,7 @@ class TelegramBot:
             return []
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT e.*, p.name as project_name
                 FROM employee_expenses e
                 LEFT JOIN projects p ON e.project_id = p.id
@@ -1144,7 +1170,7 @@ class TelegramBot:
             from datetime import datetime
             accepted_at = datetime.now().isoformat()
 
-            cursor = conn.execute(
+            cursor = self._execute_query(conn,
                 "UPDATE tasks SET status = 'in_progress', accepted_at = ? WHERE id = ?",
                 (accepted_at, task_id)
             )
@@ -1456,7 +1482,7 @@ class TelegramBot:
             return
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT status, COUNT(*) as count
                 FROM tasks
                 WHERE assigned_to = ?
@@ -1503,7 +1529,7 @@ class TelegramBot:
             return
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT
                     COUNT(*) as total_count,
                     SUM(amount) as total_amount,
@@ -2505,7 +2531,7 @@ class TelegramBot:
             await query.answer("Ошибка подключения к базе данных")
             return
 
-        cursor = conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,))
+        cursor = self._execute_query(conn, "SELECT name FROM projects WHERE id = ?", (project_id,))
         project = cursor.fetchone()
         conn.close()
 
@@ -2809,7 +2835,7 @@ class TelegramBot:
                 await query.edit_message_text("❌ Ошибка подключения к базе данных")
                 return
 
-            cursor = conn.execute("SELECT title, executor_id FROM tasks WHERE id = ?", (task_id,))
+            cursor = self._execute_query(conn, "SELECT title, executor_id FROM tasks WHERE id = ?", (task_id,))
             task = cursor.fetchone()
 
             if not task:
@@ -2822,7 +2848,7 @@ class TelegramBot:
                 return
 
             # Обновляем статус задачи на "completed"
-            conn.execute("""
+            self._execute_query(conn, """
                 UPDATE tasks
                 SET status = 'done', finished_at = datetime('now')
                 WHERE id = ?
@@ -2859,7 +2885,7 @@ class TelegramBot:
                 await query.edit_message_text("❌ Ошибка подключения к базе данных")
                 return
 
-            cursor = conn.execute("SELECT title, executor_id FROM tasks WHERE id = ?", (task_id,))
+            cursor = self._execute_query(conn, "SELECT title, executor_id FROM tasks WHERE id = ?", (task_id,))
             task = cursor.fetchone()
 
             if not task:
@@ -2872,7 +2898,7 @@ class TelegramBot:
                 return
 
             # Удаляем задачу
-            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            self._execute_query(conn, "DELETE FROM tasks WHERE id = ?", (task_id,))
             conn.commit()
 
             await query.edit_message_text(
