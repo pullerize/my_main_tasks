@@ -1226,16 +1226,34 @@ class AdminTaskHandlers:
                 ORDER BY name
             """, (role,))
 
+            rows = cursor.fetchall()
+            logger.info(f"Found {len(rows)} users with role {role}")
+
             users = []
-            for row in cursor.fetchall():
-                users.append({
-                    'id': row[0],
-                    'name': row[1],
-                    'telegram_username': row[2],
-                    'role': row[3]
-                })
+            for row in rows:
+                # Проверяем тип row для отладки
+                import os
+                db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
+                if db_engine == 'postgresql':
+                    # PostgreSQL с RealDictCursor возвращает dict-like объекты
+                    users.append({
+                        'id': row['id'] if isinstance(row, dict) else row[0],
+                        'name': row['name'] if isinstance(row, dict) else row[1],
+                        'telegram_username': row['telegram_username'] if isinstance(row, dict) else row[2],
+                        'role': row['role'] if isinstance(row, dict) else row[3]
+                    })
+                else:
+                    # SQLite возвращает tuple
+                    users.append({
+                        'id': row[0],
+                        'name': row[1],
+                        'telegram_username': row[2],
+                        'role': row[3]
+                    })
 
             conn.close()
+            logger.info(f"Returning {len(users)} users")
             return users
         except Exception as e:
             logger.error(f"Ошибка получения пользователей по роли {role}: {e}")
