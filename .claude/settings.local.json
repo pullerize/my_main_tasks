@@ -51,7 +51,10 @@
       "Bash(./stop_bot.sh:*)",
       "Bash(./start_bot.sh:*)",
       "Read(//dev/pts/**)",
-      "Bash(readlink:*)"
+      "Bash(readlink:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": [],
