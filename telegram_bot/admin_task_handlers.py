@@ -17,6 +17,25 @@ class AdminTaskHandlers:
     def __init__(self, bot_instance):
         self.bot = bot_instance
 
+    def _execute_query(self, conn, query: str, params: tuple):
+        """
+        Вспомогательная функция для выполнения SQL запросов
+        с автоматическим определением типа БД (SQLite или PostgreSQL)
+        """
+        import os
+        db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
+        if db_engine == 'postgresql':
+            # PostgreSQL: создаем курсор и используем %s для параметров
+            cursor = conn.cursor()
+            # Заменяем ? на %s для PostgreSQL
+            pg_query = query.replace('?', '%s')
+            cursor.execute(pg_query, params)
+            return cursor
+        else:
+            # SQLite: используем execute напрямую с ?
+            return conn.execute(query, params)
+
     async def handle_admin_task_management(self, update, context):
         """Меню управления задачами для администратора"""
         keyboard = [
@@ -1197,7 +1216,7 @@ class AdminTaskHandlers:
             return []
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT id, name, telegram_username, role
                 FROM users
                 WHERE role = ? AND is_active = 1
@@ -1228,14 +1247,23 @@ class AdminTaskHandlers:
             return None
 
         try:
-            cursor = conn.execute("""
+            cursor = self._execute_query(conn, """
                 SELECT id, name, telegram_username, role
                 FROM users
                 WHERE id = ?
             """, (user_id,))
+
             user = cursor.fetchone()
             conn.close()
-            return dict(user) if user else None
+
+            if user:
+                return {
+                    'id': user[0],
+                    'name': user[1],
+                    'telegram_username': user[2],
+                    'role': user[3]
+                }
+            return None
         except Exception as e:
             logger.error(f"Ошибка получения пользователя: {e}")
             conn.close()
