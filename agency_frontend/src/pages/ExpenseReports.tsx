@@ -446,7 +446,7 @@ const ExpenseReports: React.FC = () => {
     }
 
     try {
-      const response = await authFetch(`${API_URL}/employee-expenses`, {
+      const response = await authFetch(`${API_URL}/employee-expenses/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
