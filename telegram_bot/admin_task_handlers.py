@@ -1671,6 +1671,10 @@ class AdminTaskHandlers:
 
             tasks = cursor.fetchall()
 
+            # Определяем тип БД для правильной обработки результатов
+            import os
+            db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
             if not tasks:
                 # Получаем роль текущего пользователя для определения кнопок
                 current_user = update.effective_user
@@ -1704,25 +1708,44 @@ class AdminTaskHandlers:
             for i, task in enumerate(tasks, 1):
                 task_info = []
 
+                # Извлекаем данные задачи с учётом типа БД
+                if db_engine == 'postgresql':
+                    task_id = task['id'] if isinstance(task, dict) else task[0]
+                    task_title = task['title'] if isinstance(task, dict) else task[1]
+                    task_desc = task['description'] if isinstance(task, dict) else task[2]
+                    task_project = task['project'] if isinstance(task, dict) else task[3]
+                    task_type = task['task_type'] if isinstance(task, dict) else task[4]
+                    task_deadline = task['deadline'] if isinstance(task, dict) else task[5]
+                    task_created = task['created_at'] if isinstance(task, dict) else task[6]
+                else:
+                    task_id = task[0]
+                    task_title = task[1]
+                    task_desc = task[2]
+                    task_project = task[3]
+                    task_type = task[4]
+                    task_deadline = task[5]
+                    task_created = task[6]
+
                 # Заголовок задачи с номером
                 task_info.append(f"📝 **Задача #{i}**")
-                task_info.append(f"**{task[1]}**")  # title
+                task_info.append(f"**{task_title}**")
                 task_info.append("─────────────────────")
 
                 # Проект
-                if task[3]:  # project
-                    task_info.append(f"🎯 **Проект:** {task[3]}")
+                if task_project:
+                    task_info.append(f"🎯 **Проект:** {task_project}")
 
                 # Тип задачи
-                if task[4]:  # task_type
-                    task_info.append(f"📂 **Тип:** {self.get_task_type_for_webapp(task[4])}")
+                if task_type:
+                    task_info.append(f"📂 **Тип:** {self.get_task_type_for_webapp(task_type)}")
 
                 # Дедлайн
-                if task[5]:  # deadline
+                if task_deadline:
                     try:
                         from datetime import datetime
                         # Дедлайн уже в локальном времени
-                        deadline_dt = datetime.fromisoformat(task[5].replace('Z', '+00:00'))
+                        deadline_str_value = str(task_deadline)
+                        deadline_dt = datetime.fromisoformat(deadline_str_value.replace('Z', '+00:00'))
                         deadline_str = deadline_dt.strftime("%d.%m.%Y в %H:%M")
                         task_info.append(f"⏰ **Дедлайн:** {deadline_str}")
 
@@ -1731,7 +1754,7 @@ class AdminTaskHandlers:
 
                         # Проверяем, сколько времени осталось до дедлайна
                         now = datetime.now()
-                        time_left = local_deadline - now
+                        time_left = deadline_dt - now
                         if time_left.days < 0:
                             task_info.append("🔴 **Срок:** Просрочен!")
                         elif time_left.days == 0:
@@ -1740,21 +1763,23 @@ class AdminTaskHandlers:
                             task_info.append("🟠 **Срок:** Завтра")
                         else:
                             task_info.append(f"⏱️ **Осталось:** {time_left.days} дн.")
-                    except:
-                        task_info.append(f"⏰ **Дедлайн:** {task[5]}")
+                    except Exception as e:
+                        logger.error(f"Ошибка обработки дедлайна: {e}")
+                        task_info.append(f"⏰ **Дедлайн:** {task_deadline}")
 
                 # Описание
-                if task[2]:  # description
-                    desc = task[2]
+                if task_desc:
+                    desc = str(task_desc)
                     if len(desc) > 200:
                         desc = desc[:200] + "..."
                     task_info.append(f"📄 **Описание:**\n{desc}")
 
                 # Дата создания
-                if task[6]:  # created_at
+                if task_created:
                     try:
                         from datetime import datetime
-                        created_dt = datetime.fromisoformat(task[6].replace('Z', '+00:00'))
+                        created_str_value = str(task_created)
+                        created_dt = datetime.fromisoformat(created_str_value.replace('Z', '+00:00'))
                         created_str = created_dt.strftime("%d.%m.%Y")
                         task_info.append(f"📅 **Создано:** {created_str}")
                     except:
@@ -1770,8 +1795,8 @@ class AdminTaskHandlers:
                     # Создаем inline кнопки для задачи
                     inline_keyboard = [
                         [
-                            InlineKeyboardButton("✅ Завершить", callback_data=f"complete_task_{task[0]}"),
-                            InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_task_{task[0]}")
+                            InlineKeyboardButton("✅ Завершить", callback_data=f"complete_task_{task_id}"),
+                            InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_task_{task_id}")
                         ]
                     ]
                     inline_markup = InlineKeyboardMarkup(inline_keyboard)
@@ -1822,8 +1847,8 @@ class AdminTaskHandlers:
                     # Для остальных задач только inline кнопки
                     keyboard = [
                         [
-                            InlineKeyboardButton("✅ Завершить", callback_data=f"complete_task_{task[0]}"),
-                            InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_task_{task[0]}")
+                            InlineKeyboardButton("✅ Завершить", callback_data=f"complete_task_{task_id}"),
+                            InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_task_{task_id}")
                         ]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
