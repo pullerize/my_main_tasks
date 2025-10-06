@@ -1066,27 +1066,40 @@ class AdminTaskHandlers:
             task_id = cursor.lastrowid
             conn.commit()
 
-            # Получаем telegram_id исполнителя для отправки уведомления
+            # Получаем telegram_id и name исполнителя для отправки уведомления
             executor_cursor = self._execute_query(conn,
-                "SELECT telegram_id FROM users WHERE id = ?",
+                "SELECT telegram_id, name FROM users WHERE id = ?",
                 (task_data.get('executor_id'),)
             )
-            executor = executor_cursor.fetchone()
+            executor_row = executor_cursor.fetchone()
 
             conn.close()
 
             # Отправляем уведомление исполнителю в фоновом режиме (не блокируя ответ)
-            if executor and executor['telegram_id']:
-                logger.info(f"📨 Отправка уведомления о задаче #{task_id} исполнителю {executor['name']} (telegram_id: {executor['telegram_id']})")
-                asyncio.create_task(
-                    self.send_task_notification(
-                        executor_telegram_id=executor['telegram_id'],
-                        task_id=task_id,
-                        task_data=task_data
+            if executor_row:
+                import os
+                db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
+                if db_engine == 'postgresql':
+                    executor_telegram_id = executor_row['telegram_id'] if isinstance(executor_row, dict) else executor_row[0]
+                    executor_name = executor_row['name'] if isinstance(executor_row, dict) else executor_row[1]
+                else:
+                    executor_telegram_id = executor_row[0]
+                    executor_name = executor_row[1]
+
+                if executor_telegram_id:
+                    logger.info(f"📨 Отправка уведомления о задаче #{task_id} исполнителю {executor_name} (telegram_id: {executor_telegram_id})")
+                    asyncio.create_task(
+                        self.send_task_notification(
+                            executor_telegram_id=executor_telegram_id,
+                            task_id=task_id,
+                            task_data=task_data
+                        )
                     )
-                )
+                else:
+                    logger.warning(f"⚠️ Уведомление не отправлено: у исполнителя {executor_name} нет telegram_id")
             else:
-                logger.warning(f"⚠️ Уведомление не отправлено: executor={executor}, telegram_id={executor.get('telegram_id') if executor else 'None'}")
+                logger.warning(f"⚠️ Уведомление не отправлено: исполнитель не найден")
 
             # Формируем сообщение об успехе
             success_message = f"""
