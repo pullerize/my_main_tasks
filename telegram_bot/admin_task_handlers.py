@@ -1661,11 +1661,11 @@ class AdminTaskHandlers:
                 )
                 return
 
-            # Получаем активные задачи пользователя (статусы "new", "in_progress" и "overdue")
+            # Получаем активные задачи пользователя (только принятые в работу)
             cursor = self._execute_query(conn, """
                 SELECT id, title, description, project, task_type, deadline, created_at
                 FROM tasks
-                WHERE executor_id = ? AND status IN ('new', 'in_progress', 'overdue')
+                WHERE executor_id = ? AND status = 'in_progress'
                 ORDER BY created_at DESC
             """, (user['id'],))
 
