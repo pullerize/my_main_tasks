@@ -46,6 +46,12 @@ def verify_password(plain_password, hashed_password):
     try:
         if not hashed_password:
             return False
+
+        # bcrypt has 72 byte limit - truncate if necessary
+        # This must match the truncation in get_password_hash
+        if len(plain_password.encode('utf-8')) > 72:
+            plain_password = plain_password[:72]
+
         return pwd_context.verify(plain_password, hashed_password)
     except Exception as e:
         print(f"Password verification error: {e}")
