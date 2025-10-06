@@ -1068,7 +1068,7 @@ function ExpenseReportsSection() {
       employeeParams.append('end_date', `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`)
       employeeParams.append('all_users', 'true')
 
-      const employeeRes = await fetch(`${API_URL}/employee-expenses?${employeeParams}`, {
+      const employeeRes = await fetch(`${API_URL}/employee-expenses/?${employeeParams}`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       let employeeExpenses: any[] = []
