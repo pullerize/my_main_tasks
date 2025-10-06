@@ -1309,15 +1309,31 @@ class AdminTaskHandlers:
                 ORDER BY start_date DESC
             """, ())
 
+            rows = cursor.fetchall()
+            logger.info(f"Found {len(rows)} projects")
+
+            import os
+            db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+
             projects = []
-            for row in cursor.fetchall():
-                projects.append({
-                    'id': row[0],
-                    'name': row[1],
-                    'start_date': row[2] if len(row) > 2 else None
-                })
+            for row in rows:
+                if db_engine == 'postgresql':
+                    # PostgreSQL с RealDictCursor возвращает dict-like объекты
+                    projects.append({
+                        'id': row['id'] if isinstance(row, dict) else row[0],
+                        'name': row['name'] if isinstance(row, dict) else row[1],
+                        'start_date': row['start_date'] if isinstance(row, dict) else (row[2] if len(row) > 2 else None)
+                    })
+                else:
+                    # SQLite возвращает tuple
+                    projects.append({
+                        'id': row[0],
+                        'name': row[1],
+                        'start_date': row[2] if len(row) > 2 else None
+                    })
 
             conn.close()
+            logger.info(f"Returning {len(projects)} projects")
             return projects
         except Exception as e:
             logger.error(f"Ошибка получения проектов: {e}")
