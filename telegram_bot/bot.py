@@ -847,6 +847,11 @@ class TelegramBot:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
+            # Экранируем данные пользователя из Telegram
+            safe_username = escape_markdown(user.username or 'не указан')
+            safe_first_name = escape_markdown(user.first_name or '')
+            safe_last_name = escape_markdown(user.last_name or '')
+
             message = f"""
 🎯 **Система управления задачами 8Bit**
 
@@ -859,10 +864,11 @@ class TelegramBot:
 
 **Ваши данные для администратора:**
 • Telegram ID: `{user.id}`
-• Username: @{user.username or 'не указан'}
-• Имя: {user.first_name} {user.last_name or ''}
+• Username: @{safe_username}
+• Имя: {safe_first_name} {safe_last_name}
             """
 
+            logger.info(f"Неавторизованный пользователь {user.id} (@{user.username}): {user.first_name} {user.last_name or ''}")
             await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
             return
 
