@@ -222,9 +222,15 @@ class DBConnection:
         if self._db_type == 'postgresql':
             # PostgreSQL: создаем курсор
             import psycopg2.extras
+            import re
             cursor = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             # PostgreSQL использует %s вместо ?
             pg_query = query.replace('?', '%s')
+
+            # Заменяем boolean сравнения: = 0 -> = false, = 1 -> = true
+            # Ищем паттерны вида: is_archived = 0, is_active = 1 и т.д.
+            pg_query = re.sub(r'\b(is_archived|is_active|is_recurring|is_deleted)\s*=\s*0\b', r'\1 = false', pg_query)
+            pg_query = re.sub(r'\b(is_archived|is_active|is_recurring|is_deleted)\s*=\s*1\b', r'\1 = true', pg_query)
 
             # Для INSERT запросов автоматически добавляем RETURNING id
             if 'INSERT INTO' in pg_query.upper() and 'RETURNING' not in pg_query.upper():
@@ -2560,7 +2566,7 @@ class TelegramBot:
         user = update.effective_user
         db_user = self.get_user_by_telegram_id(user.id, user.username)
         if db_user and db_user['role'] == 'admin':
-            handled = await self.admin_handlers.handle_text_messages_for_admin(update, context)
+            handled = await self.admin_handlers.handle_admin_message(update, context, text)
             if handled:
                 return
 
