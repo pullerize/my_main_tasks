@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from markdown_utils import escape_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -529,27 +530,36 @@ class UserTaskHandlers:
             if project:
                 project_name = project['name']
 
+        # Экранируем все пользовательские данные
+        safe_title = escape_markdown(task_data.get('title', 'Не указано'))
+        safe_executor = escape_markdown(task_data.get('executor_name', 'Не выбран'))
+        safe_project = escape_markdown(project_name)
+        safe_type = escape_markdown(task_data.get('task_type', 'Не указан'))
+        safe_format = escape_markdown(task_data.get('task_format', '')) if task_data.get('task_format') else ''
+        safe_deadline = escape_markdown(task_data.get('deadline_text', 'Не установлен'))
+
         # Формируем красивый вывод
         preview_text = f"""
 📋 **Предварительный просмотр задачи**
 
 ┌─────────────────────────────────┐
-│ 📝 **Название:** {task_data.get('title', 'Не указано')}
-│ 👤 **Исполнитель:** {task_data.get('executor_name', 'Не выбран')}
-│ 📁 **Проект:** {project_name}
-│ 🏷️ **Тип:** {task_data.get('task_type', 'Не указан')}
+│ 📝 **Название:** {safe_title}
+│ 👤 **Исполнитель:** {safe_executor}
+│ 📁 **Проект:** {safe_project}
+│ 🏷️ **Тип:** {safe_type}
 """
 
         if task_data.get('task_format'):
-            preview_text += f"│ 📐 **Формат:** {task_data.get('task_format')}\n"
+            preview_text += f"│ 📐 **Формат:** {safe_format}\n"
 
-        preview_text += f"│ ⏰ **Дедлайн:** {task_data.get('deadline_text', 'Не установлен')}\n"
+        preview_text += f"│ ⏰ **Дедлайн:** {safe_deadline}\n"
 
         if task_data.get('description'):
             desc = task_data['description']
             if len(desc) > 100:
                 desc = desc[:100] + "..."
-            preview_text += f"│ 📄 **Описание:** {desc}\n"
+            safe_desc = escape_markdown(desc)
+            preview_text += f"│ 📄 **Описание:** {safe_desc}\n"
 
         preview_text += "└─────────────────────────────────┘"
 
@@ -726,22 +736,30 @@ class UserTaskHandlers:
             task_id = cursor.lastrowid
             conn.commit()
 
+            # Экранируем все пользовательские данные
+            safe_title = escape_markdown(task_data.get('title'))
+            safe_executor = escape_markdown(task_data.get('executor_name'))
+            safe_project = escape_markdown(project_name if project_name else 'Не выбран')
+            safe_type = escape_markdown(task_data.get('task_type'))
+            safe_format = escape_markdown(task_data.get('task_format', '')) if task_data.get('task_format') else ''
+            safe_deadline = escape_markdown(task_data.get('deadline_text', 'Не установлен'))
+
             # Формируем сообщение об успехе
             success_message = f"""
 ✅ **Задача успешно создана!**
 
 📋 **Задача #{task_id}**
 ┌─────────────────────────────────┐
-│ 📝 **Название:** {task_data.get('title')}
-│ 👤 **Исполнитель:** {task_data.get('executor_name')}
-│ 📁 **Проект:** {project_name if project_name else 'Не выбран'}
-│ 🏷️ **Тип:** {task_data.get('task_type')}
+│ 📝 **Название:** {safe_title}
+│ 👤 **Исполнитель:** {safe_executor}
+│ 📁 **Проект:** {safe_project}
+│ 🏷️ **Тип:** {safe_type}
 """
 
             if task_data.get('task_format'):
-                success_message += f"│ 📐 **Формат:** {task_data.get('task_format')}\n"
+                success_message += f"│ 📐 **Формат:** {safe_format}\n"
 
-            success_message += f"│ ⏰ **Дедлайн:** {task_data.get('deadline_text', 'Не установлен')}\n"
+            success_message += f"│ ⏰ **Дедлайн:** {safe_deadline}\n"
             success_message += "└─────────────────────────────────┘\n\n"
             success_message += "📲 **Задача отображается в системе и доступна исполнителю.**"
 
@@ -838,22 +856,28 @@ class UserTaskHandlers:
         for i, task in enumerate(tasks, 1):
             task_info = []
 
+            # Экранируем пользовательские данные
+            safe_title = escape_markdown(task[1]) if task[1] else ""
+            safe_project = escape_markdown(task[3]) if task[3] else ""
+            safe_type = escape_markdown(task[4]) if task[4] else ""
+            safe_format = escape_markdown(task[7]) if task[7] else ""
+
             # Заголовок задачи с номером
             task_info.append(f"📝 **Задача #{i}**")
-            task_info.append(f"**{task[1]}**")  # title
+            task_info.append(f"**{safe_title}**")  # title
             task_info.append("─────────────────────")
 
             # Проект
             if task[3]:  # project
-                task_info.append(f"🎯 **Проект:** {task[3]}")
+                task_info.append(f"🎯 **Проект:** {safe_project}")
 
             # Тип задачи
             if task[4]:  # task_type
-                task_info.append(f"📂 **Тип:** {task[4]}")
+                task_info.append(f"📂 **Тип:** {safe_type}")
 
             # Формат задачи (для дизайнеров)
             if task[7]:  # task_format
-                task_info.append(f"🎨 **Формат:** {task[7]}")
+                task_info.append(f"🎨 **Формат:** {safe_format}")
 
             # Дедлайн
             if task[5]:  # deadline
@@ -884,7 +908,8 @@ class UserTaskHandlers:
                 desc = task[2]
                 if len(desc) > 200:
                     desc = desc[:200] + "..."
-                task_info.append(f"📄 **Описание:**\n{desc}")
+                safe_desc = escape_markdown(desc)
+                task_info.append(f"📄 **Описание:**\n{safe_desc}")
 
             # Дата создания
             if task[6]:  # created_at
@@ -1013,7 +1038,8 @@ class UserTaskHandlers:
                 desc = task[2]
                 if len(desc) > 200:
                     desc = desc[:200] + "..."
-                task_info.append(f"📄 **Описание:**\n{desc}")
+                safe_desc = escape_markdown(desc)
+                task_info.append(f"📄 **Описание:**\n{safe_desc}")
 
             # Дата создания
             if task[6]:  # created_at
