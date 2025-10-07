@@ -836,9 +836,9 @@ class ExpenseHandlers:
                     FROM employee_expenses ee
                     LEFT JOIN projects p ON ee.project_id = p.id
                     WHERE ee.user_id = ?
-                    AND ee.created_at >= ?
-                    ORDER BY ee.created_at DESC
-                """, (user_id, start_date))
+                    AND ee.date >= ?
+                    ORDER BY ee.date DESC
+                """, (user_id, start_date.date() if hasattr(start_date, 'date') else start_date))
             else:
                 cursor = conn.execute("""
                     SELECT
@@ -847,7 +847,7 @@ class ExpenseHandlers:
                     FROM employee_expenses ee
                     LEFT JOIN projects p ON ee.project_id = p.id
                     WHERE ee.user_id = ?
-                    ORDER BY ee.created_at DESC
+                    ORDER BY ee.date DESC
                 """, (user_id,))
 
             expenses = [dict(row) for row in cursor.fetchall()]
@@ -865,6 +865,10 @@ class ExpenseHandlers:
             return []
 
         try:
+            # Конвертируем datetime в date если нужно
+            start_date_str = start_date.date() if hasattr(start_date, 'date') else start_date
+            end_date_str = end_date.date() if hasattr(end_date, 'date') else end_date
+
             cursor = conn.execute("""
                 SELECT
                     ee.id, ee.name, ee.amount, ee.date, ee.description,
@@ -872,10 +876,10 @@ class ExpenseHandlers:
                 FROM employee_expenses ee
                 LEFT JOIN projects p ON ee.project_id = p.id
                 WHERE ee.user_id = ?
-                AND ee.created_at >= ?
-                AND ee.created_at < ?
-                ORDER BY ee.created_at DESC
-            """, (user_id, start_date, end_date))
+                AND ee.date >= ?
+                AND ee.date < ?
+                ORDER BY ee.date DESC
+            """, (user_id, start_date_str, end_date_str))
 
             expenses = [dict(row) for row in cursor.fetchall()]
             conn.close()
