@@ -115,6 +115,10 @@ class ExpenseHandlers:
     async def handle_view_expenses_start(self, update, context):
         """Начало просмотра расходов - выбор периода"""
         try:
+            # Очищаем любые данные просмотра архивных задач
+            context.user_data.pop('archived_tasks_view', None)
+            context.user_data.pop('active_tasks_view', None)
+
             # Получаем текущий год
             current_year = datetime.now().year
 

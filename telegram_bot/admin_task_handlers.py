@@ -2477,6 +2477,9 @@ class AdminTaskHandlers:
                         "📌 Выберите действие:",
                         reply_markup=reply_markup
                     )
+
+                    # Очищаем данные просмотра архивных задач
+                    context.user_data.pop('archived_tasks_view', None)
                 else:
                     # Для остальных задач только сообщение
                     await update.message.reply_text(
