@@ -733,7 +733,20 @@ class UserTaskHandlers:
                 datetime.now().isoformat()
             ))
 
-            task_id = cursor.lastrowid
+            # Получаем ID созданной задачи
+            # Для PostgreSQL: DBConnection автоматически добавляет RETURNING id, используем fetchone()
+            # Для SQLite: используем lastrowid
+            import os
+            db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+            if db_engine == 'postgresql':
+                result = cursor.fetchone()
+                task_id = result['id'] if result else None
+            else:
+                task_id = cursor.lastrowid
+
+            if not task_id:
+                raise Exception("Не удалось получить ID созданной задачи")
+
             conn.commit()
 
             # Экранируем все пользовательские данные
