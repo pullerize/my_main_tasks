@@ -224,6 +224,11 @@ class DBConnection:
             cursor = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             # PostgreSQL использует %s вместо ?
             pg_query = query.replace('?', '%s')
+
+            # Для INSERT запросов автоматически добавляем RETURNING id
+            if 'INSERT INTO' in pg_query.upper() and 'RETURNING' not in pg_query.upper():
+                pg_query = pg_query.rstrip().rstrip(';') + ' RETURNING id'
+
             if params:
                 cursor.execute(pg_query, params)
             else:
