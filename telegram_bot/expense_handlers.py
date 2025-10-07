@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import ContextTypes
 import logging
+from markdown_utils import escape_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -271,12 +272,17 @@ class ExpenseHandlers:
                 project_name = expense['project_name'] if expense['project_name'] else 'Без проекта'
                 description = expense['description'] if expense['description'] else ''
 
-                message += f"💳 **{expense['name']}**\n"
+                # Экранируем специальные символы Markdown
+                safe_name = escape_markdown(expense['name'])
+                safe_project = escape_markdown(project_name)
+                safe_description = escape_markdown(description)
+
+                message += f"💳 **{safe_name}**\n"
                 message += f"   💰 Сумма: {amount:,.0f} сум\n"
                 message += f"   📅 Дата: {date_str}\n"
-                message += f"   📁 Проект: {project_name}\n"
+                message += f"   📁 Проект: {safe_project}\n"
                 if description:
-                    message += f"   💬 Комментарий: {description}\n"
+                    message += f"   💬 Комментарий: {safe_description}\n"
                 message += "\n"
 
             message += f"💎 **Общая сумма: {total:,.0f} сум**"
@@ -373,12 +379,17 @@ class ExpenseHandlers:
                 project_name = expense['project_name'] if expense['project_name'] else 'Без проекта'
                 description = expense['description'] if expense['description'] else ''
 
-                message += f"💳 **{expense['name']}**\n"
+                # Экранируем специальные символы Markdown
+                safe_name = escape_markdown(expense['name'])
+                safe_project = escape_markdown(project_name)
+                safe_description = escape_markdown(description)
+
+                message += f"💳 **{safe_name}**\n"
                 message += f"   💰 Сумма: {amount:,.0f} сум\n"
                 message += f"   📅 Дата: {date_str}\n"
-                message += f"   📁 Проект: {project_name}\n"
+                message += f"   📁 Проект: {safe_project}\n"
                 if description:
-                    message += f"   💬 Комментарий: {description}\n"
+                    message += f"   💬 Комментарий: {safe_description}\n"
                 message += "\n"
 
             message += f"💎 **Общая сумма: {total:,.0f} сум**"
@@ -724,14 +735,19 @@ class ExpenseHandlers:
                     projects = self.get_projects()
                     project_name = next((p['name'] for p in projects if p['id'] == expense_data['project_id']), "Неизвестный проект")
 
+                # Экранируем специальные символы Markdown
+                safe_name = escape_markdown(expense_data['name'])
+                safe_project = escape_markdown(project_name)
+                safe_description = escape_markdown(expense_data['description']) if expense_data['description'] else ""
+
                 message = f"""✅ **Расход успешно добавлен!**
 
 📝 **Детали:**
-• Наименование: {expense_data['name']}
+• Наименование: {safe_name}
 • Сумма: {expense_data['amount']:,.0f} сум
 • Дата: {expense_data['date']}
-• Проект: {project_name}
-{f"• Комментарий: {expense_data['description']}" if expense_data['description'] else ""}
+• Проект: {safe_project}
+{f"• Комментарий: {safe_description}" if expense_data['description'] else ""}
 
 💰 Расход сохранен в системе и будет отображаться в отчетах."""
 
