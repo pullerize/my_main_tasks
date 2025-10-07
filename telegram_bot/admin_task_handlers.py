@@ -20,39 +20,24 @@ class AdminTaskHandlers:
     def _execute_query(self, conn, query: str, params: tuple, return_id: bool = False):
         """
         Вспомогательная функция для выполнения SQL запросов
-        с автоматическим определением типа БД (SQLite или PostgreSQL)
+        Теперь просто переадресует к DBConnection.execute()
 
         Args:
-            conn: Database connection
+            conn: Database connection (DBConnection wrapper)
             query: SQL query string
             params: Query parameters
-            return_id: If True, добавляет RETURNING id для PostgreSQL INSERT запросов
+            return_id: If True, добавляет RETURNING id для PostgreSQL INSERT запросов (устарело, игнорируется)
         """
-        import os
-        db_engine = os.getenv('DB_ENGINE', 'sqlite').lower()
+        # Заменяем boolean поля: 1/0 -> true/false для PostgreSQL
+        query = query.replace('is_active = 1', 'is_active = true')
+        query = query.replace('is_active = 0', 'is_active = false')
+        query = query.replace('is_archived = 1', 'is_archived = true')
+        query = query.replace('is_archived = 0', 'is_archived = false')
+        query = query.replace('is_recurring = 1', 'is_recurring = true')
+        query = query.replace('is_recurring = 0', 'is_recurring = false')
 
-        if db_engine == 'postgresql':
-            # PostgreSQL: создаем курсор и используем %s для параметров
-            cursor = conn.cursor()
-            # Заменяем ? на %s для PostgreSQL
-            pg_query = query.replace('?', '%s')
-            # Заменяем boolean поля: 1/0 -> true/false для PostgreSQL
-            pg_query = pg_query.replace('is_active = 1', 'is_active = true')
-            pg_query = pg_query.replace('is_active = 0', 'is_active = false')
-            pg_query = pg_query.replace('is_archived = 1', 'is_archived = true')
-            pg_query = pg_query.replace('is_archived = 0', 'is_archived = false')
-            pg_query = pg_query.replace('is_recurring = 1', 'is_recurring = true')
-            pg_query = pg_query.replace('is_recurring = 0', 'is_recurring = false')
-
-            # Для INSERT запросов в PostgreSQL добавляем RETURNING id
-            if return_id and 'INSERT INTO' in pg_query.upper():
-                pg_query = pg_query.rstrip().rstrip(';') + ' RETURNING id'
-
-            cursor.execute(pg_query, params)
-            return cursor
-        else:
-            # SQLite: используем execute напрямую с ?
-            return conn.execute(query, params)
+        # DBConnection автоматически обрабатывает различия между SQLite и PostgreSQL
+        return conn.execute(query, params)
 
     async def handle_admin_task_management(self, update, context):
         """Меню управления задачами для администратора"""
