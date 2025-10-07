@@ -821,13 +821,14 @@ class TelegramBot:
             # Определяем статус активации
             access_status = "🟢 Активирован" if db_user['role'] != 'inactive' else "🔴 Не активирован"
 
-            # Экранируем имя пользователя для безопасного использования в Markdown
+            # Экранируем имя пользователя и роль для безопасного использования в Markdown
             safe_name = escape_markdown(db_user['name'])
+            safe_role_name = escape_markdown(role_name)
 
             message = f"""Добро пожаловать в 8Bit Digital!
 
 
-👤 {safe_name} — наш 🏆 {role_name}
+👤 {safe_name} — наш 🏆 {safe_role_name}
 
 🔑 Уровень доступа: {access_status}
 
@@ -836,6 +837,7 @@ class TelegramBot:
 
 Выберите действие ниже ⬇️"""
 
+            logger.info(f"Отправка приветствия пользователю {user.id} (@{user.username}): {db_user['name']}")
             await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
             return
         else:
@@ -2582,8 +2584,20 @@ class TelegramBot:
         if "409" in error_message or "Conflict" in error_message:
             return  # Не логируем эти ошибки, они не критичны
 
-        # Логируем только серьёзные ошибки
-        logger.error(f"Ошибка: {context.error}")
+        # Собираем информацию о пользователе для диагностики
+        user_info = "неизвестен"
+        if update and update.effective_user:
+            user = update.effective_user
+            user_info = f"ID={user.id}, username=@{user.username or 'нет'}, name={user.first_name or ''} {user.last_name or ''}"
+
+            # Для ошибок парсинга Markdown пытаемся получить данные из БД
+            if "Can't parse entities" in error_message:
+                db_user = self.get_user_by_telegram_id(user.id, user.username)
+                if db_user:
+                    user_info += f", db_name={db_user['name']}, role={db_user['role']}"
+
+        # Логируем только серьёзные ошибки с информацией о пользователе
+        logger.error(f"Ошибка для пользователя [{user_info}]: {context.error}")
         # Не показываем сообщение об ошибке пользователю - просто логируем
 
     def setup_handlers(self):
