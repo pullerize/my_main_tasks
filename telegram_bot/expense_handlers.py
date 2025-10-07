@@ -119,8 +119,9 @@ class ExpenseHandlers:
             context.user_data.pop('archived_tasks_view', None)
             context.user_data.pop('active_tasks_view', None)
 
-            # Получаем текущий год
-            current_year = datetime.now().year
+            # Получаем текущий год с учетом UTC+5
+            from datetime import timezone, timedelta
+            current_year = (datetime.now(timezone.utc) + timedelta(hours=5)).year
 
             keyboard = [
                 ["📅 Январь", "📅 Февраль", "📅 Март"],
@@ -200,8 +201,9 @@ class ExpenseHandlers:
                 "📅 Декабрь": (12, "декабрь")
             }
 
-            # Определяем даты для периода
-            now = datetime.now()
+            # Определяем даты для периода с учетом UTC+5
+            from datetime import timezone, timedelta
+            now = datetime.now(timezone.utc) + timedelta(hours=5)
 
             if period_text == "📅 За все время":
                 start_date = None
@@ -315,8 +317,9 @@ class ExpenseHandlers:
                 await query.edit_message_text("❌ Пользователь не найден.")
                 return
 
-            # Определяем даты для периода
-            now = datetime.now()
+            # Определяем даты для периода с учетом UTC+5
+            from datetime import timezone, timedelta
+            now = datetime.now(timezone.utc) + timedelta(hours=5)
             if period == "day":
                 start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 period_name = "сегодня"
@@ -536,7 +539,9 @@ class ExpenseHandlers:
                 # Обрабатываем дату
                 try:
                     if text == "📅 Сегодня" or text.lower() in ['сегодня', 'today']:
-                        date_obj = datetime.now()
+                        # Используем UTC+5 для текущей даты
+                        from datetime import timezone, timedelta
+                        date_obj = datetime.now(timezone.utc) + timedelta(hours=5)
                     else:
                         date_obj = datetime.strptime(text, "%d.%m.%Y")
 
@@ -561,7 +566,9 @@ class ExpenseHandlers:
 
                 expense_data['step'] = 'date'
 
-                today = datetime.now().strftime("%d.%m.%Y")
+                # Используем UTC+5 для текущей даты
+                from datetime import timezone, timedelta
+                today = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%d.%m.%Y")
                 keyboard = [
                     ["📅 Сегодня"],
                     ["◀️ Назад", "❌ Отмена"]
@@ -781,21 +788,29 @@ class ExpenseHandlers:
         """Сохранение расхода в базу данных"""
         conn = self.bot.get_db_connection()
         if not conn:
+            logger.error("Не удалось получить соединение с БД")
             return False
 
         try:
+            # Форматируем created_at в ISO формат для SQLite
+            from datetime import timezone, timedelta
+            created_at = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+
+            logger.info(f"Сохранение расхода: user_id={user_id}, name={name}, amount={amount}, date={date}, project_id={project_id}")
+
             conn.execute("""
                 INSERT INTO employee_expenses (
                     user_id, name, amount, date, project_id, description, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
-                user_id, name, float(amount), date, project_id, description, datetime.now()
+                user_id, name, float(amount), date, project_id, description, created_at
             ))
             conn.commit()
             conn.close()
+            logger.info("Расход успешно сохранен")
             return True
         except Exception as e:
-            logger.error(f"Ошибка сохранения расхода: {e}")
+            logger.error(f"Ошибка сохранения расхода: {e}", exc_info=True)
             conn.close()
             return False
 
@@ -803,21 +818,29 @@ class ExpenseHandlers:
         """Сохранение расхода компании в базу данных"""
         conn = self.bot.get_db_connection()
         if not conn:
+            logger.error("Не удалось получить соединение с БД")
             return False
 
         try:
+            # Форматируем created_at в ISO формат для SQLite
+            from datetime import timezone, timedelta
+            created_at = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+
+            logger.info(f"Сохранение расхода компании: name={name}, amount={amount}, date={date}")
+
             conn.execute("""
                 INSERT INTO common_expenses (
                     name, amount, date, description, created_at
                 ) VALUES (?, ?, ?, ?, ?)
             """, (
-                name, float(amount), date, description, datetime.now()
+                name, float(amount), date, description, created_at
             ))
             conn.commit()
             conn.close()
+            logger.info("Расход компании успешно сохранен")
             return True
         except Exception as e:
-            logger.error(f"Ошибка сохранения расхода компании: {e}")
+            logger.error(f"Ошибка сохранения расхода компании: {e}", exc_info=True)
             conn.close()
             return False
 
