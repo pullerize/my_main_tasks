@@ -3,21 +3,27 @@
 Миграция: Добавление поля project_id в таблицу employee_expenses
 
 Использование:
-    python3 migrate_add_project_id.py
+    python3 migrate_add_project_id.py [--db-type=sqlite|postgresql] [--db-path=/path/to/db]
 """
 import os
 import sys
-from pathlib import Path
+import argparse
 
-# Добавляем путь к модулям backend
-sys.path.insert(0, str(Path(__file__).parent / "agency_backend"))
+# Парсим аргументы командной строки
+parser = argparse.ArgumentParser(description='Миграция базы данных: добавление project_id')
+parser.add_argument('--db-type', default='sqlite', choices=['sqlite', 'postgresql'],
+                    help='Тип базы данных (по умолчанию: sqlite)')
+parser.add_argument('--db-path', default='/var/lib/8bit-codex/shared_database.db',
+                    help='Путь к SQLite базе данных (по умолчанию: /var/lib/8bit-codex/shared_database.db)')
+parser.add_argument('--postgres-host', default='localhost', help='PostgreSQL host')
+parser.add_argument('--postgres-port', default='5432', help='PostgreSQL port')
+parser.add_argument('--postgres-db', default='agency', help='PostgreSQL database name')
+parser.add_argument('--postgres-user', default='agency', help='PostgreSQL username')
+parser.add_argument('--postgres-password', default='', help='PostgreSQL password')
 
-from dotenv import load_dotenv
+args = parser.parse_args()
 
-# Загружаем переменные окружения
-load_dotenv()
-
-DB_ENGINE = os.getenv("DB_ENGINE", "sqlite")
+DB_ENGINE = args.db_type
 
 if DB_ENGINE == "postgresql":
     import psycopg2
@@ -25,11 +31,11 @@ if DB_ENGINE == "postgresql":
 
     # PostgreSQL подключение
     conn = psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-        dbname=os.getenv("POSTGRES_DB", "agency"),
-        user=os.getenv("POSTGRES_USER", "agency"),
-        password=os.getenv("POSTGRES_PASSWORD", "")
+        host=args.postgres_host,
+        port=args.postgres_port,
+        dbname=args.postgres_db,
+        user=args.postgres_user,
+        password=args.postgres_password
     )
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cursor = conn.cursor()
@@ -57,8 +63,31 @@ if DB_ENGINE == "postgresql":
 else:
     import sqlite3
 
-    # SQLite подключение
-    db_path = os.getenv("SQLITE_PATH", "/home/pullerize/8bit_db/shared_database.db")
+    # SQLite подключение - пробуем найти базу данных
+    possible_paths = [
+        args.db_path,
+        "/var/lib/8bit-codex/shared_database.db",
+        "/opt/8bit-codex/shared_database.db",
+        "/home/pullerize/8bit_db/shared_database.db",
+        "./shared_database.db",
+        "../shared_database.db",
+    ]
+
+    db_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            db_path = path
+            break
+
+    if not db_path:
+        print("❌ Файл базы данных не найден!")
+        print("\nПроверены следующие пути:")
+        for path in possible_paths:
+            print(f"  - {path}")
+        print("\nПожалуйста, укажите правильный путь с помощью --db-path")
+        sys.exit(1)
+
+    print(f"✓ Найдена SQLite база: {db_path}")
     conn = sqlite3.connect(db_path)
 
     try:
