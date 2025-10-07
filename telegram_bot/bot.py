@@ -207,6 +207,69 @@ if not acquire_lock():
     print("💡 Или используйте: python bot.py --force")
     sys.exit(1)
 
+
+class DBConnection:
+    """Обертка для унификации работы с SQLite и PostgreSQL"""
+
+    def __init__(self, conn, db_type='sqlite'):
+        self._conn = conn
+        self._db_type = db_type
+        self._cursor = None
+
+    def execute(self, query, params=None):
+        """Выполнить SQL запрос"""
+        if self._db_type == 'postgresql':
+            # PostgreSQL: создаем курсор
+            import psycopg2.extras
+            cursor = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            # PostgreSQL использует %s вместо ?
+            pg_query = query.replace('?', '%s')
+            if params:
+                cursor.execute(pg_query, params)
+            else:
+                cursor.execute(pg_query)
+            self._cursor = cursor
+            return cursor
+        else:
+            # SQLite: используем execute напрямую
+            if params:
+                return self._conn.execute(query, params)
+            else:
+                return self._conn.execute(query)
+
+    def commit(self):
+        """Зафиксировать транзакцию"""
+        self._conn.commit()
+        if self._cursor:
+            self._cursor.close()
+            self._cursor = None
+
+    def close(self):
+        """Закрыть соединение"""
+        if self._cursor:
+            self._cursor.close()
+            self._cursor = None
+        self._conn.close()
+
+    def rollback(self):
+        """Откатить транзакцию"""
+        self._conn.rollback()
+        if self._cursor:
+            self._cursor.close()
+            self._cursor = None
+
+    @property
+    def row_factory(self):
+        """Получить row_factory (для совместимости)"""
+        return self._conn.row_factory if hasattr(self._conn, 'row_factory') else None
+
+    @row_factory.setter
+    def row_factory(self, value):
+        """Установить row_factory (для совместимости)"""
+        if hasattr(self._conn, 'row_factory'):
+            self._conn.row_factory = value
+
+
 class TelegramBot:
     """Главный класс Telegram бота"""
 
@@ -286,7 +349,8 @@ class TelegramBot:
                 # Используем RealDictCursor для совместимости со sqlite3.Row
                 conn.cursor_factory = psycopg2.extras.RealDictCursor
                 logger.info("✅ Подключение к PostgreSQL создано успешно")
-                return conn
+                # Возвращаем обертку для унификации интерфейса
+                return DBConnection(conn, db_type='postgresql')
             else:
                 # SQLite подключение
                 logger.info(f"Попытка подключения к SQLite: {DATABASE_PATH}")
@@ -297,7 +361,8 @@ class TelegramBot:
                 )
                 conn.row_factory = sqlite3.Row
                 logger.info("✅ Подключение к SQLite создано успешно")
-                return conn
+                # Возвращаем обертку для унификации интерфейса
+                return DBConnection(conn, db_type='sqlite')
 
         except Exception as e:
             logger.error(f"Ошибка создания подключения к БД: {e}")
@@ -310,10 +375,18 @@ class TelegramBot:
                 conn = self._connection_pool.pop()
                 # Проверяем жизнь соединения
                 try:
-                    conn.execute("SELECT 1")
+                    # Используем обертку для выполнения запроса
+                    cursor = conn.execute("SELECT 1")
+                    # Закрываем cursor если он есть
+                    if hasattr(cursor, 'close'):
+                        cursor.close()
                     return conn
                 except:
                     # Соединение мертво, создаем новое
+                    try:
+                        conn.close()
+                    except:
+                        pass
                     return self._create_connection()
             else:
                 # Пул пуст, создаем новое соединение
