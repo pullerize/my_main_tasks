@@ -46,6 +46,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from admin_task_handlers import AdminTaskHandlers
 from user_task_handlers import UserTaskHandlers
 from expense_handlers import ExpenseHandlers
+from markdown_utils import escape_markdown
 
 # Конфигурация
 try:
@@ -814,10 +815,13 @@ class TelegramBot:
             # Определяем статус активации
             access_status = "🟢 Активирован" if db_user['role'] != 'inactive' else "🔴 Не активирован"
 
+            # Экранируем имя пользователя для безопасного использования в Markdown
+            safe_name = escape_markdown(db_user['name'])
+
             message = f"""Добро пожаловать в 8Bit Digital!
 
 
-👤 {db_user['name']} — наш 🏆 {role_name}
+👤 {safe_name} — наш 🏆 {role_name}
 
 🔑 Уровень доступа: {access_status}
 
@@ -1095,13 +1099,17 @@ class TelegramBot:
             status_emoji = '🔄'  # in_progress
             priority_emoji = '🔥' if task.get('high_priority') else ''
 
-            message += f"{status_emoji} **{task['title']}**{priority_emoji}\n"
+            # Экранируем пользовательские данные
+            safe_title = escape_markdown(task['title'])
+            message += f"{status_emoji} **{safe_title}**{priority_emoji}\n"
             if task.get('description'):
                 # Ограничиваем описание 100 символами
                 desc = task['description'][:100] + "..." if len(task['description']) > 100 else task['description']
-                message += f"   📝 {desc}\n"
+                safe_desc = escape_markdown(desc)
+                message += f"   📝 {safe_desc}\n"
             if task.get('project'):
-                message += f"   📁 Проект: {task['project']}\n"
+                safe_project = escape_markdown(task['project'])
+                message += f"   📁 Проект: {safe_project}\n"
             if task.get('deadline'):
                 deadline = task['deadline']
                 message += f"   ⏰ Дедлайн: {deadline}\n"
@@ -1310,10 +1318,13 @@ class TelegramBot:
             # Определяем статус активации
             access_status = "🟢 Активирован" if db_user['role'] != 'inactive' else "🔴 Не активирован"
 
+            # Экранируем имя пользователя для безопасного использования в Markdown
+            safe_name = escape_markdown(db_user['name'])
+
             message = f"""Добро пожаловать в 8Bit Digital!
 
 
-👤 {db_user['name']} — наш 🏆 {role_name}
+👤 {safe_name} — наш 🏆 {role_name}
 
 🔑 Уровень доступа: {access_status}
 
@@ -1343,9 +1354,11 @@ class TelegramBot:
             # Проверяем, что пользователь действительно добавился
             db_user = self.get_user_by_telegram_id(user.id, user.username)
             if db_user:
+                # Экранируем имя пользователя для безопасного использования в Markdown
+                safe_name = escape_markdown(db_user['name'])
                 await query.edit_message_text(
                     f"✅ **Авторизация успешна!**\n\n"
-                    f"👤 **Добро пожаловать, {db_user['name']}!**\n"
+                    f"👤 **Добро пожаловать, {safe_name}!**\n"
                     f"🔹 Роль: {db_user['role']}",
                     parse_mode='Markdown'
                 )
