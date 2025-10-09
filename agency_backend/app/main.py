@@ -327,6 +327,14 @@ def recurring_tasks_scheduler():
                     logger.info(f"🔄 Creating new instance of recurring task: {template_task.title}")
                     logger.info(f"   Template task status: {template_task.status}")
 
+                    # Вычисляем новый дедлайн: берем время из шаблона и применяем к текущей дате
+                    new_deadline = None
+                    if template_task.deadline:
+                        deadline_time = template_task.deadline.time()
+                        current_date = models.get_local_time_utc5().date()
+                        new_deadline = datetime.combine(current_date, deadline_time)
+                        logger.info(f"   Updated deadline: {template_task.deadline} -> {new_deadline}")
+
                     # Создаем НОВУЮ задачу на основе шаблона
                     # ВАЖНО: Явно устанавливаем status='new' (строка), а не копируем из шаблона
                     new_task = models.Task(
@@ -335,7 +343,7 @@ def recurring_tasks_scheduler():
                         project=template_task.project,
                         task_type=template_task.task_type,
                         task_format=template_task.task_format,
-                        deadline=template_task.deadline,
+                        deadline=new_deadline,
                         executor_id=template_task.executor_id,
                         author_id=template_task.author_id,
                         status='new',  # Явно устанавливаем строку 'new', а не enum
